@@ -26,6 +26,7 @@ class Workload(ABC):
         runner: Runner,
         hw: HardwareConfig,
         collectors: list[MetricCollector],
+        model: str = "",
     ) -> BenchmarkResult:
         """Execute the workload and return results."""
         ...
