@@ -48,3 +48,6 @@ metadata:
   lpddr5x_node1_mb: 485698
   nvme_config: "3x 7TB RAID0 + 1x 7TB OS"
   tdp_watts: 1400
+  peak_flops: 9.0e15            # default used by roofline (FP16)
+  peak_flops_fp16: 9.0e15       # 4 x 2,250 TFLOPS FP16 per B300
+  peak_flops_fp8: 18.0e15       # 4 x 4,500 TFLOPS FP8 per B300  

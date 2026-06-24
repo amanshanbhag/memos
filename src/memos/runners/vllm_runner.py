@@ -21,13 +21,22 @@ class VLLMRunner(Runner):
             raise ImportError("vLLM not installed. Run: pip install -e '.[vllm]'")
 
         self._model_name = model
+
+        tp = kwargs.pop("tensor_parallel_size", hw.gpu_count)
+        gpu_util = kwargs.pop("gpu_memory_utilization", 0.9)
+        prefix_cache = kwargs.pop("enable_prefix_caching", False)
+
+        kwargs.setdefault("kv_cache_metrics", True)
+        kwargs.setdefault("enable_mfu_metrics", True)
+
         self._llm = LLM(
             model=model,
-            tensor_parallel_size=kwargs.get("tensor_parallel_size", hw.gpu_count),
-            gpu_memory_utilization=kwargs.get("gpu_memory_utilization", 0.9),
-            enable_prefix_caching=kwargs.get("enable_prefix_caching", False),
+            tensor_parallel_size=tp,
+            gpu_memory_utilization=gpu_util,
+            enable_prefix_caching=prefix_cache,
             disable_log_stats=False,
             generation_config="vllm",
+            **kwargs,
         )
 
     def get_metrics(self) -> dict[str, float]:

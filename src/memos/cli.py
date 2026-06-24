@@ -27,6 +27,8 @@ def main() -> None:
 @click.option(
     "--tp", default=None, type=int, help="Tensor parallel size (default: hw.gpu_count)"
 )
+@click.option("--pp", default=None, type=int, help="Pipeline parallel size")
+@click.option("--dp", default=None, type=int, help="Data parallel size")
 @click.option("--cache-mode", default="cold", type=click.Choice(["cold", "warm"]))
 @click.option("--context-lengths", default=None, help="Comma-separated context lengths")
 @click.option("--repeats", default=3, type=int, help="Repeats per context length")
@@ -44,6 +46,8 @@ def run(
     model: str,
     output: str,
     tp: int | None,
+    pp: int | None,
+    dp: int | None,
     cache_mode: str,
     context_lengths: str | None,
     repeats: int,
@@ -92,6 +96,10 @@ def run(
     runner_kwargs = {}
     if tp is not None:
         runner_kwargs["tensor_parallel_size"] = tp
+    if pp is not None:
+        runner_kwargs["pipeline_parallel_size"] = pp
+    if dp is not None:
+        runner_kwargs["data_parallel_size"] = dp
     runner_kwargs["enable_prefix_caching"] = cache_mode == "warm"
 
     for arg in engine_arg:
