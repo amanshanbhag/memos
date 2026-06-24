@@ -33,6 +33,11 @@ def main() -> None:
 @click.option(
     "--output-tokens", default=128, type=int, help="Tokens to generate per request"
 )
+@click.option(
+    "--engine-arg",
+    multiple=True,
+    help="Extra engine args as key=value (e.g. --engine-arg max_model_len=4096)",
+)
 def run(
     workload_name: str,
     hw: str,
@@ -43,6 +48,7 @@ def run(
     context_lengths: str | None,
     repeats: int,
     output_tokens: int,
+    engine_arg: tuple[str, ...],
 ) -> None:
     """Run a benchmark workload."""
     from memos.environment import detect_environment
@@ -87,6 +93,21 @@ def run(
     if tp is not None:
         runner_kwargs["tensor_parallel_size"] = tp
     runner_kwargs["enable_prefix_caching"] = cache_mode == "warm"
+
+    for arg in engine_arg:
+        k, _, v = arg.partition("=")
+        # Try to parse as int/float/bool, fall back to string
+        if v.lower() in ("true", "false"):
+            runner_kwargs[k] = v.lower() == "true"
+        else:
+            try:
+                runner_kwargs[k] = int(v)
+            except ValueError:
+                try:
+                    runner_kwargs[k] = float(v)
+                except ValueError:
+                    runner_kwargs[k] = v
+
     runner.setup(model, hw_config, **runner_kwargs)
 
     # Setup collectors
