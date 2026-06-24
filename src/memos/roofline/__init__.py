@@ -1,0 +1,3 @@
+"""
+Roofline model for memos.
+"""

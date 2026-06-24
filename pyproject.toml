@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "memos"
+version = "0.1.0"
+description = "Benchmark suite, memory roofline model, and scheduling toolkit for AI inference memory systems"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "matplotlib",
+    "numpy",
+    "rich",
+    "click",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm"]
+
+[project.scripts]
+memos = "memos.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memos"]

@@ -1,0 +1,3 @@
+"""
+Metrics collection for memos.
+"""

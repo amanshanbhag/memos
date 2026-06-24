@@ -1,0 +1,50 @@
+name: gb300_tray
+gpu: GB300
+gpu_count: 4
+numa_nodes: 34    # 2 CPU + 32 GPU device nodes (numactl --hardware)
+
+tiers:
+  - name: hbm
+    capacity_gb: 277.5    # 284208 MiB per GPU, confirmed by nvidia-smi
+    bandwidth_gbps: 8000
+    latency_us: 0.1
+    numa_distance: 10
+
+  - name: peer_hbm
+    capacity_gb: 277.5    # per peer GPU, 3 peers on tray
+    bandwidth_gbps: 1800  # NV18 (confirmed by nvidia-smi topo)
+    latency_us: 1.0
+    numa_distance: 11     # within NVLink domain
+
+  - name: lpddr5x_local
+    capacity_gb: 478      # confirmed by numactl (489806 MB on node 0)
+    bandwidth_gbps: 450   # C2C, same superchip
+    latency_us: 0.5
+    numa_distance: 80
+
+  - name: lpddr5x_remote
+    capacity_gb: 474      # confirmed by numactl (485698 MB on node 1)
+    bandwidth_gbps: 300   # cross-superchip, estimated from 80:120 distance ratio
+    latency_us: 1.5
+    numa_distance: 120
+
+  - name: nvme
+    capacity_gb: 21000    # /raid RAID0, confirmed by lsblk
+    bandwidth_gbps: 21    # 3x NVMe PCIe Gen5
+    latency_us: 50
+
+metadata:
+  architecture: blackwell_ultra
+  nvlink_version: 5
+  nvlink_links_per_pair: 18           # NV18 confirmed
+  c2c_bandwidth_gbps: 900
+  ats_supported: true
+  superchips_per_tray: 2
+  grace_cpus_per_tray: 2
+  grace_cores_per_cpu: 72
+  gpu_hbm_mib: 284208                # nvidia-smi
+  gpu_numa_nodes_per_gpu: 8           # likely HBM stacks
+  lpddr5x_node0_mb: 489806
+  lpddr5x_node1_mb: 485698
+  nvme_config: "3x 7TB RAID0 + 1x 7TB OS"
+  tdp_watts: 1400
