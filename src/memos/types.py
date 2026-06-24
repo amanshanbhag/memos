@@ -42,10 +42,13 @@ class MetricSample:
 class BenchmarkResult:
     """Complete result from running one workload on one hardware config."""
 
-    workload: str  # "context_sweep", "thrashing_sweep", etc.
-    hardware: str  # hardware config name
-    model: str  # model name/path
+    workload: str
+    hardware: str
+    model: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     params: dict[str, Any] = field(default_factory=dict)
     metrics: list[MetricSample] = field(default_factory=list)
+    environment: dict[str, Any] = field(
+        default_factory=dict
+    )  # from detect_environment()
     raw: dict[str, Any] = field(default_factory=dict)
