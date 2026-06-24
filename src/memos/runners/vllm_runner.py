@@ -26,8 +26,29 @@ class VLLMRunner(Runner):
             tensor_parallel_size=kwargs.get("tensor_parallel_size", hw.gpu_count),
             gpu_memory_utilization=kwargs.get("gpu_memory_utilization", 0.9),
             enable_prefix_caching=kwargs.get("enable_prefix_caching", False),
+            disable_log_stats=False,
             generation_config="vllm",
         )
+
+    def get_metrics(self) -> dict[str, float]:
+        if self._llm is None:
+            return {}
+        raw = self._llm.get_metrics()
+        result = {}
+        for metric in raw:
+            name = metric.name
+            # Disambiguate metrics with same name but different labels
+            if hasattr(metric, "labels") and metric.labels:
+                extra = {
+                    k: v
+                    for k, v in metric.labels.items()
+                    if k not in ("model_name", "engine")
+                }
+                if extra:
+                    suffix = "_".join(f"{v}" for v in extra.values())
+                    name = f"{name}_{suffix}"
+            result[name] = metric.value
+        return result
 
     def generate(
         self, prompts: list[str], params: GenerateParams
@@ -66,22 +87,3 @@ class VLLMRunner(Runner):
                 )
             )
         return results
-
-    def get_metrics(self) -> dict[str, float]:
-        if self._llm is None:
-            return {}
-        raw = self._llm.get_metrics()
-        # get_metrics returns Prometheus-style metrics; flatten to dict
-        result = {}
-        if isinstance(raw, dict):
-            return raw
-        # Handle case where it returns metric objects
-        for metric in raw:
-            if hasattr(metric, "name") and hasattr(metric, "value"):
-                result[metric.name] = metric.value
-        return result
-
-    def shutdown(self) -> None:
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
