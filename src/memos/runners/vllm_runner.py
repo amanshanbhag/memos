@@ -87,3 +87,8 @@ class VLLMRunner(Runner):
                 )
             )
         return results
+
+    def shutdown(self) -> None:
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
