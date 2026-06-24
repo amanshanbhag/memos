@@ -209,7 +209,8 @@ def roofline(results_dir: str, hw: str, output: str | None) -> None:
 
             ceilings = compute_ceilings(
                 hw=hw_config,
-                flops_per_token=hw_config.metadata.get("peak_flops", 1e15) / 1000,
+                flops_per_token=float(hw_config.metadata.get("peak_flops", 1e15))
+                / 1000,
                 bytes_per_token=ctx * 2,  # rough: 2 bytes per token of KV cache (fp16)
             )
             all_ceilings.append(ceilings)

@@ -34,7 +34,7 @@ def compute_ceilings(
         peak_flops: Override peak FLOPS (otherwise pulled from hw.metadata).
     """
     if peak_flops is None:
-        peak_flops = hw.metadata.get("peak_flops", 0.0)
+        peak_flops = float(hw.metadata.get("peak_flops", 0.0))
 
     # Compute ceiling: how fast can we generate if compute is the only limit?
     compute = peak_flops / flops_per_token if flops_per_token > 0 else float("inf")
