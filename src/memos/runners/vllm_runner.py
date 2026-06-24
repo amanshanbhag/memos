@@ -36,8 +36,9 @@ class VLLMRunner(Runner):
         raw = self._llm.get_metrics()
         result = {}
         for metric in raw:
+            if not hasattr(metric, "value"):
+                continue
             name = metric.name
-            # Disambiguate metrics with same name but different labels
             if hasattr(metric, "labels") and metric.labels:
                 extra = {
                     k: v
