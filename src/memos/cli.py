@@ -57,6 +57,7 @@ def run(
     """Run a benchmark workload."""
     from memos.environment import detect_environment
     from memos.metrics.throughput import ThroughputCollector
+    from memos.model_profile import from_pretrained
     from memos.results import save_result
     from memos.runners.vllm_runner import VLLMRunner
     from memos.workloads.context_sweep import ContextSweep
@@ -76,6 +77,16 @@ def run(
     click.echo(f"Hardware:  {hw_config.name}")
     click.echo(f"Model:     {model}")
     click.echo(f"Cache:     {cache_mode}")
+    click.echo()
+
+    # Profile model architecture
+    click.echo("Profiling model architecture...")
+    profile = from_pretrained(model)
+    click.echo(
+        f"  layers={profile.num_layers} h={profile.hidden_size} "
+        f"heads={profile.num_heads} kv_heads={profile.num_kv_heads}"
+    )
+    click.echo(f"  weight_bytes={profile.weight_bytes() / 1e9:.2f} GB")
     click.echo()
 
     # Parse context lengths
@@ -135,6 +146,7 @@ def run(
 
     result = workload.run(runner, hw_config, collectors, model=model)
     result.environment = dataclasses.asdict(env)
+    result.raw["model_profile"] = profile.to_dict()
 
     # Save result
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -166,6 +178,7 @@ def run(
 @click.option("--output", default=None, type=click.Path(), help="Save plot to file")
 def roofline(results_dir: str, hw: str, output: str | None) -> None:
     """Generate a memory roofline plot from benchmark results."""
+    from memos.model_profile import ModelProfile
     from memos.results import load_result
     from memos.roofline.model import compute_ceilings
     from memos.roofline.plot import plot_roofline
@@ -189,6 +202,10 @@ def roofline(results_dir: str, hw: str, output: str | None) -> None:
         result = load_result(rf)
         tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
 
+        # Reconstruct ModelProfile from result (or fall back to rough estimate)
+        profile_dict = result.raw.get("model_profile")
+        profile = ModelProfile.from_dict(profile_dict) if profile_dict else None
+
         by_ctx = {}
         for s in tps_samples:
             ctx = s.context.get("context_length", 0)
@@ -207,14 +224,21 @@ def roofline(results_dir: str, hw: str, output: str | None) -> None:
                 else 1.0
             )
 
+            if profile:
+                flops = profile.flops_per_token(seq=ctx)
+                bw = profile.bytes_per_token(seq=ctx)
+            else:
+                flops = float(hw_config.metadata.get("peak_flops", 1e15)) / 1000
+                bw = ctx * 2
+
             ceilings = compute_ceilings(
                 hw=hw_config,
-                flops_per_token=float(hw_config.metadata.get("peak_flops", 1e15))
-                / 1000,
-                bytes_per_token=ctx * 2,  # rough: 2 bytes per token of KV cache (fp16)
+                flops_per_token=flops,
+                bytes_per_token=bw,
             )
             all_ceilings.append(ceilings)
-            all_labels.append(f"{ctx // 1024}K")
+            label = f"{ctx}T" if ctx < 1024 else f"{ctx // 1024}K"
+            all_labels.append(label)
             all_measured.append(avg_tps)
 
     if not all_ceilings:
