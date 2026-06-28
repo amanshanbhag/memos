@@ -466,82 +466,67 @@ def measure_host_device_cuda(
 ) -> BandwidthResult:
     rt = _cuda_rt()
     _check_cuda(rt.cudaSetDevice(device))
-    host_buf = ctypes.c_void_p()
     dev_buf = ctypes.c_void_p()
-    _check_cuda(rt.cudaHostAlloc(ctypes.byref(host_buf), _BW_BUF_BYTES, 0))
     _check_cuda(rt.cudaMalloc(ctypes.byref(dev_buf), _BW_BUF_BYTES))
 
-    if numa_node is not None:
-        _set_numa_affinity(host_buf, _BW_BUF_BYTES, numa_node)
+    host_buf, numa_allocated = _alloc_host_on_numa(rt, _BW_BUF_BYTES, numa_node)
 
     try:
         bw = _measure_memcpy_bw(rt, dev_buf, host_buf, _BW_BUF_BYTES, 1)
         lat = _measure_memcpy_latency(rt, dev_buf, host_buf, 1)
     finally:
-        rt.cudaFreeHost(host_buf)
+        _free_host_numa(rt, host_buf, _BW_BUF_BYTES, numa_allocated)
         rt.cudaFree(dev_buf)
     return BandwidthResult(bandwidth_gbps=bw, latency_us=lat)
 
 
-def _set_numa_affinity(buf: ctypes.c_void_p, size: int, node: int) -> None:
-    """Bind a memory region to a specific NUMA node.
+def _alloc_host_on_numa(
+    rt: ctypes.CDLL, size: int, numa_node: int | None
+) -> tuple[ctypes.c_void_p, bool]:
+    """Allocate host memory on a specific NUMA node and register it with CUDA.
 
-    Tries three approaches in order:
-      1. libnuma (numa_tonodemask_memory) -- most portable
-      2. libc mbind -- works on x86_64 glibc
-      3. raw syscall -- fallback for aarch64 containers where libc
-         doesn't export mbind as a symbol
+    If numa_node is specified, uses libnuma's numa_alloc_onnode to place
+    memory on the correct node BEFORE pinning it with CUDA. This is
+    necessary because cudaHostAlloc pins pages in place, making them
+    immovable by mbind.
+
+    Returns (pointer, True) if numa-allocated, or (pointer, False) if
+    falling back to cudaHostAlloc.
     """
-    MPOL_BIND = 2
+    if numa_node is not None:
+        try:
+            numa = ctypes.CDLL("libnuma.so.1")
+            numa.numa_alloc_onnode.restype = ctypes.c_void_p
+            ptr = numa.numa_alloc_onnode(ctypes.c_size_t(size), ctypes.c_int(numa_node))
+            if ptr:
+                host_buf = ctypes.c_void_p(ptr)
+                cudaHostRegisterDefault = 0
+                err = rt.cudaHostRegister(
+                    host_buf, ctypes.c_size_t(size), cudaHostRegisterDefault
+                )
+                if err == 0:
+                    return host_buf, True
+                numa.numa_free(host_buf, ctypes.c_size_t(size))
+        except (OSError, AttributeError):
+            pass
 
-    # Approach 1: libnuma
-    try:
-        numa = ctypes.CDLL("libnuma.so.1")
-        numa.numa_tonodemask_memory(buf, ctypes.c_size_t(size), ctypes.c_int(node))
-        return
-    except (OSError, AttributeError):
-        pass
+    host_buf = ctypes.c_void_p()
+    _check_cuda(rt.cudaHostAlloc(ctypes.byref(host_buf), size, 0))
+    return host_buf, False
 
-    # Approach 2: libc mbind symbol
-    try:
-        libc = ctypes.CDLL("libc.so.6")
-        nodemask = (ctypes.c_ulong * 1)(1 << node)
-        libc.mbind(
-            buf,
-            ctypes.c_ulong(size),
-            ctypes.c_int(MPOL_BIND),
-            nodemask,
-            ctypes.c_ulong(64),
-            ctypes.c_uint(0),
-        )
-        return
-    except (OSError, AttributeError):
-        pass
 
-    # Approach 3: raw syscall (aarch64=235, x86_64=237)
-    try:
-        import platform as _plat
-
-        libc = ctypes.CDLL("libc.so.6")
-        arch = _plat.machine()
-        if arch == "aarch64":
-            SYS_MBIND = 235
-        elif arch in ("x86_64", "AMD64"):
-            SYS_MBIND = 237
-        else:
-            return
-        nodemask = (ctypes.c_ulong * 1)(1 << node)
-        libc.syscall(
-            ctypes.c_long(SYS_MBIND),
-            buf,
-            ctypes.c_ulong(size),
-            ctypes.c_int(MPOL_BIND),
-            nodemask,
-            ctypes.c_ulong(64),
-            ctypes.c_uint(0),
-        )
-    except (OSError, AttributeError):
-        pass
+def _free_host_numa(
+    rt: ctypes.CDLL, buf: ctypes.c_void_p, size: int, numa_allocated: bool
+) -> None:
+    if numa_allocated:
+        rt.cudaHostUnregister(buf)
+        try:
+            numa = ctypes.CDLL("libnuma.so.1")
+            numa.numa_free(buf, ctypes.c_size_t(size))
+        except (OSError, AttributeError):
+            pass
+    else:
+        rt.cudaFreeHost(buf)
 
 
 # ---------------------------------------------------------------------------
