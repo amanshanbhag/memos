@@ -484,19 +484,63 @@ def measure_host_device_cuda(
 
 
 def _set_numa_affinity(buf: ctypes.c_void_p, size: int, node: int) -> None:
+    """Bind a memory region to a specific NUMA node.
+
+    Tries three approaches in order:
+      1. libnuma (numa_tonodemask_memory) -- most portable
+      2. libc mbind -- works on x86_64 glibc
+      3. raw syscall -- fallback for aarch64 containers where libc
+         doesn't export mbind as a symbol
+    """
+    MPOL_BIND = 2
+
+    # Approach 1: libnuma
+    try:
+        numa = ctypes.CDLL("libnuma.so.1")
+        numa.numa_tonodemask_memory(buf, ctypes.c_size_t(size), ctypes.c_int(node))
+        return
+    except (OSError, AttributeError):
+        pass
+
+    # Approach 2: libc mbind symbol
     try:
         libc = ctypes.CDLL("libc.so.6")
-        MPOL_BIND = 2
-        nodemask_arr = (ctypes.c_ulong * 1)(1 << node)
+        nodemask = (ctypes.c_ulong * 1)(1 << node)
         libc.mbind(
             buf,
             ctypes.c_ulong(size),
             ctypes.c_int(MPOL_BIND),
-            nodemask_arr,
+            nodemask,
             ctypes.c_ulong(64),
             ctypes.c_uint(0),
         )
-    except OSError:
+        return
+    except (OSError, AttributeError):
+        pass
+
+    # Approach 3: raw syscall (aarch64=235, x86_64=237)
+    try:
+        import platform as _plat
+
+        libc = ctypes.CDLL("libc.so.6")
+        arch = _plat.machine()
+        if arch == "aarch64":
+            SYS_MBIND = 235
+        elif arch in ("x86_64", "AMD64"):
+            SYS_MBIND = 237
+        else:
+            return
+        nodemask = (ctypes.c_ulong * 1)(1 << node)
+        libc.syscall(
+            ctypes.c_long(SYS_MBIND),
+            buf,
+            ctypes.c_ulong(size),
+            ctypes.c_int(MPOL_BIND),
+            nodemask,
+            ctypes.c_ulong(64),
+            ctypes.c_uint(0),
+        )
+    except (OSError, AttributeError):
         pass
 
 
