@@ -582,65 +582,97 @@ def _free_host_numa(
 # ---------------------------------------------------------------------------
 
 
+def _is_writable_dir(path: str) -> bool:
+    """Check if path is a writable directory (not a bind-mounted file)."""
+    p = Path(path)
+    return p.is_dir() and os.access(path, os.W_OK)
+
+
 def _find_storage_mount() -> str | None:
+    """Find a local NVMe-backed writable mount for storage benchmarking.
+
+    Filters out read-only bind-mounts (e.g. /etc/hosts backed by nvme
+    in containers) and non-directory mounts. Prefers well-known local
+    scratch paths, then falls back to large writable NVMe-backed mounts.
+    """
+    # Check well-known local scratch paths first
+    for path in ("/raid", "/scratch", "/local", "/local_scratch"):
+        if _is_writable_dir(path):
+            return path
+
+    # Parse /proc/mounts for writable NVMe-backed directories
     try:
-        out = subprocess.check_output(
-            ["df", "-B1", "--output=target,size,source"], text=True
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
+        mounts = Path("/proc/mounts").read_text()
+    except OSError:
         return None
 
     candidates: list[tuple[str, int]] = []
-    for line in out.strip().splitlines()[1:]:
+    for line in mounts.splitlines():
         parts = line.split()
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
-        mount, size_str, source = parts[0], parts[1], parts[2]
-        if "nvme" in source or mount in ("/raid", "/scratch", "/local", "/tmp"):
-            try:
-                candidates.append((mount, int(size_str)))
-            except ValueError:
-                continue
+        source, mount, fstype, opts = parts[0], parts[1], parts[2], parts[3]
 
-    if not candidates:
-        for line in out.strip().splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 3 and parts[0] not in ("/", "/boot", "/boot/efi"):
-                try:
-                    size = int(parts[1])
-                    if size > 50 * (1024**3):
-                        candidates.append((parts[0], size))
-                except ValueError:
-                    continue
+        if "nvme" not in source and mount != "/tmp":
+            continue
+        if "ro" in opts.split(","):
+            continue
+        if not _is_writable_dir(mount):
+            continue
+
+        # Get size via statvfs
+        try:
+            st = os.statvfs(mount)
+            size = st.f_blocks * st.f_frsize
+            candidates.append((mount, size))
+        except OSError:
+            candidates.append((mount, 0))
 
     if candidates:
         candidates.sort(key=lambda x: -x[1])
         return candidates[0][0]
+
+    # Last resort: /tmp if it's writable and reasonably large
+    if _is_writable_dir("/tmp"):
+        try:
+            st = os.statvfs("/tmp")
+            size_gb = (st.f_blocks * st.f_frsize) / (1024**3)
+            if size_gb > 10:
+                return "/tmp"
+        except OSError:
+            pass
+
     return None
 
 
 def _find_shared_fs_mount() -> str | None:
-    try:
-        out = subprocess.check_output(
-            ["mount", "-t", "lustre,gpfs,nfs,nfs4"], text=True
-        )
-        for line in out.strip().splitlines():
-            parts = line.split()
-            if len(parts) >= 3 and "on" in parts:
-                mount_idx = parts.index("on") + 1
-                if mount_idx < len(parts):
-                    return parts[mount_idx]
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-
+    """Find a shared/network filesystem mount (Lustre, GPFS, NFS)."""
     try:
         mounts = Path("/proc/mounts").read_text()
         for line in mounts.splitlines():
             parts = line.split()
             if len(parts) >= 3 and parts[2] in ("lustre", "gpfs", "nfs", "nfs4"):
-                return parts[1]
+                mount = parts[1]
+                if _is_writable_dir(mount):
+                    return mount
     except OSError:
         pass
+
+    # Fallback: check common shared FS paths
+    for path in ("/shared", "/workspace", "/home"):
+        if _is_writable_dir(path):
+            try:
+                mounts = Path("/proc/mounts").read_text()
+                for line in mounts.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[1] == path:
+                        if (
+                            parts[2] in ("lustre", "gpfs", "nfs", "nfs4")
+                            or ":" in parts[0]
+                        ):
+                            return path
+            except OSError:
+                pass
     return None
 
 
