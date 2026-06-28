@@ -348,12 +348,9 @@ def measure_hbm_nvbandwidth() -> float:
 
 
 def measure_peer_nvbandwidth(src: int, dst: int) -> float:
-    result = _run_nvbandwidth("device_to_device_bidirectional_memcpy_read_sm")
-    bw = _extract_nvbw_bandwidth_for_pair(result, src, dst)
-    if bw == 0.0:
-        result = _run_nvbandwidth("device_to_device_memcpy_read_sm")
-        bw = _extract_nvbw_bandwidth_for_pair(result, src, dst)
-    return bw
+    """Unidirectional GPU-to-GPU bandwidth (what a single reader achieves)."""
+    result = _run_nvbandwidth("device_to_device_memcpy_read_sm")
+    return _extract_nvbw_bandwidth_for_pair(result, src, dst)
 
 
 def measure_host_device_nvbandwidth() -> float:
@@ -862,21 +859,14 @@ def probe_node(verbose: bool = True) -> ProbeResult:
     tiers: list[TierResult] = []
 
     # ===== TIER: HBM =====
+    # nvbandwidth doesn't have a within-device HBM test (diagonal is N/A),
+    # so we always use cudaMemcpy for HBM regardless of nvbandwidth availability.
     if verbose:
         _log("Measuring HBM bandwidth...")
-    if use_nvbw:
-        hbm_bw = measure_hbm_nvbandwidth()
-        hbm_method = "nvbandwidth:device_to_device_memcpy_read_sm"
-        hbm_lat_result = measure_hbm_cuda(device=0)
-        hbm_lat = hbm_lat_result.latency_us
-        if hbm_bw == 0.0:
-            hbm_bw = hbm_lat_result.bandwidth_gbps
-            hbm_method = "cudaMemcpy:device_to_device"
-    else:
-        result = measure_hbm_cuda(device=0)
-        hbm_bw = result.bandwidth_gbps
-        hbm_lat = result.latency_us
-        hbm_method = "cudaMemcpy:device_to_device"
+    result = measure_hbm_cuda(device=0)
+    hbm_bw = result.bandwidth_gbps
+    hbm_lat = result.latency_us
+    hbm_method = "cudaMemcpy:device_to_device"
 
     tiers.append(
         TierResult(
@@ -900,7 +890,7 @@ def probe_node(verbose: bool = True) -> ProbeResult:
 
         if use_nvbw:
             peer_bw = measure_peer_nvbandwidth(src_dev, dst_dev)
-            peer_method = "nvbandwidth:device_to_device_bidirectional_memcpy_read_sm"
+            peer_method = "nvbandwidth:device_to_device_memcpy_read_sm"
             peer_lat_result = measure_peer_cuda(src_dev, dst_dev)
             peer_lat = peer_lat_result.latency_us
             if peer_bw == 0.0:
