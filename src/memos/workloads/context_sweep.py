@@ -41,6 +41,12 @@ class ContextSweep(Workload):
         all_metrics: list[MetricSample] = []
         params = GenerateParams(max_tokens=self._output_tokens)
 
+        # Warmup: 5 throwaway requests per context length to trigger compilation
+        for ctx_len in self._context_lengths:
+            for _ in range(5):
+                prompt = _make_prompt_unique(ctx_len)
+                runner.generate([prompt], params)
+
         for ctx_len in self._context_lengths:
             for repeat in range(self._repeats):
                 request_id = f"ctx{ctx_len}_r{repeat}"
