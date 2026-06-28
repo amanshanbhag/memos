@@ -1,0 +1,5 @@
+name: a10g_4gpu
+gpu_model: A10G
+gpus_per_node: 4
+nccl_env: {}
+nccl_max_bytes: "8G"

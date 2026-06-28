@@ -1,0 +1,5 @@
+name: l4_4gpu
+gpu_model: L4
+gpus_per_node: 4
+nccl_env: {}
+nccl_max_bytes: "4G"

@@ -1,0 +1,109 @@
+apiVersion: kubeflow.org/v2beta1
+kind: MPIJob
+metadata:
+  name: memos-calibrate-{{ platform.name }}
+{% if k8s_namespace %}  namespace: {{ k8s_namespace }}
+{% endif %}spec:
+  runPolicy:
+    cleanPodPolicy: Running
+    backoffLimit: 3
+  slotsPerWorker: {{ platform.gpus_per_node }}
+  mpiReplicaSpecs:
+    Launcher:
+      replicas: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - image: {{ image }}
+            name: memos-calibrate-launcher
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              pip install -e {{ repo_dir }} --quiet
+              OUTPUT_DIR={{ output_dir }}
+              mkdir -p $OUTPUT_DIR
+
+              # Phase 1: probe each worker
+              for i in $(seq 0 {{ nodes - 1 }}); do
+                mpirun -np 1 -H worker-$i memos _probe-node \
+                  --output $OUTPUT_DIR/node_$i.json &
+              done
+              wait
+
+              # Phase 2: NCCL bandwidth
+{% for key, val in platform.nccl_env.items() %}              export {{ key }}={{ val }}
+{% endfor %}              mpirun --allow-run-as-root \
+                -np {{ nodes * platform.gpus_per_node }} \
+                -npernode {{ platform.gpus_per_node }} \
+                --bind-to none \
+                sendrecv_perf -b 8 -e {{ platform.nccl_max_bytes }} \
+                -f 2 -g 1 -c 1 -n 100 \
+                > $OUTPUT_DIR/nccl_sendrecv.log 2>&1
+
+              mpirun --allow-run-as-root \
+                -np {{ nodes * platform.gpus_per_node }} \
+                --bind-to none \
+                all_reduce_perf -b 8 -e {{ platform.nccl_max_bytes }} \
+                -f 2 -g 1 -c 1 -n 100 \
+                > $OUTPUT_DIR/nccl_allreduce.log 2>&1
+
+              # Phase 3: Assemble
+              memos _assemble $OUTPUT_DIR \
+                --platform {{ platform.name }} \
+                --output {{ final_output }}
+            volumeMounts:
+            - name: memos-repo
+              mountPath: {{ repo_dir }}
+            - name: shared-results
+              mountPath: {{ output_dir }}
+          volumes:
+          - name: memos-repo
+            hostPath:
+              path: {{ repo_dir }}
+          - name: shared-results
+{% if pvc %}            persistentVolumeClaim:
+              claimName: {{ pvc }}
+{% else %}            emptyDir: {}
+{% endif %}    Worker:
+      replicas: {{ nodes }}
+      template:
+        spec:
+{% if nodelist_items %}          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+{% for node in nodelist_items %}                    - {{ node }}
+{% endfor %}{% endif %}          containers:
+          - image: {{ image }}
+            name: memos-calibrate-worker
+            resources:
+              limits:
+                nvidia.com/gpu: {{ platform.gpus_per_node }}
+              requests:
+                nvidia.com/gpu: {{ platform.gpus_per_node }}
+            volumeMounts:
+            - name: shmem
+              mountPath: /dev/shm
+            - name: memos-repo
+              mountPath: {{ repo_dir }}
+            - name: shared-results
+              mountPath: {{ output_dir }}
+          volumes:
+          - name: shmem
+            hostPath:
+              path: /dev/shm
+          - name: memos-repo
+            hostPath:
+              path: {{ repo_dir }}
+          - name: shared-results
+{% if pvc %}            persistentVolumeClaim:
+              claimName: {{ pvc }}
+{% else %}            emptyDir: {}
+{% endif %}

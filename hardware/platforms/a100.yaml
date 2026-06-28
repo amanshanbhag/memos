@@ -1,0 +1,5 @@
+name: a100
+gpu_model: A100
+gpus_per_node: 8
+nccl_env: {}
+nccl_max_bytes: "8G"

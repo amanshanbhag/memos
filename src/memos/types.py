@@ -15,6 +15,9 @@ class TierSpec:
     latency_us: float
     cost_per_gb_hour: float = 0.0
     numa_distance: int = 10  # default to self-distance
+    scope: str = "node"  # "device" | "node" | "rack" | "cluster"
+    multiplicity: int = 1  # how many instances accessible
+    method: str = ""  # benchmark that produced these numbers
 
 
 @dataclass

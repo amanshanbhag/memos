@@ -1,0 +1,5 @@
+name: rtx_pro_6000_4gpu
+gpu_model: RTX_PRO_6000
+gpus_per_node: 4
+nccl_env: {}
+nccl_max_bytes: "8G"

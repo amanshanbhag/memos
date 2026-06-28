@@ -1,0 +1,5 @@
+name: l40s
+gpu_model: L40S
+gpus_per_node: 4
+nccl_env: {}
+nccl_max_bytes: "8G"

@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: memos-run-{{ workload }}
+{% if k8s_namespace %}  namespace: {{ k8s_namespace }}
+{% endif %}spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+{% if nodelist_items %}      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+{% for node in nodelist_items %}                - {{ node }}
+{% endfor %}{% endif %}      containers:
+      - name: memos-run
+        image: {{ image }}
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          pip install -e {{ repo_dir }} --quiet
+          memos run {{ workload }} \
+            --hw {{ hw_path }} \
+            --model {{ model }} \
+{% if tp %}            --tp {{ tp }} \
+{% endif %}{% if context_lengths %}            --context-lengths "{{ context_lengths }}" \
+{% endif %}{% if repeats %}            --repeats {{ repeats }} \
+{% endif %}{% if cache_mode %}            --cache-mode {{ cache_mode }} \
+{% endif %}{% if output_tokens %}            --output-tokens {{ output_tokens }} \
+{% endif %}            --output {{ output_dir }}
+        resources:
+          limits:
+            nvidia.com/gpu: {{ gpus_per_node }}
+          requests:
+            nvidia.com/gpu: {{ gpus_per_node }}
+        volumeMounts:
+        - name: shmem
+          mountPath: /dev/shm
+        - name: memos-repo
+          mountPath: {{ repo_dir }}
+        - name: results
+          mountPath: {{ output_dir }}
+      volumes:
+      - name: shmem
+        hostPath:
+          path: /dev/shm
+      - name: memos-repo
+        hostPath:
+          path: {{ repo_dir }}
+      - name: results
+{% if pvc %}        persistentVolumeClaim:
+          claimName: {{ pvc }}
+{% else %}        emptyDir: {}
+{% endif %}

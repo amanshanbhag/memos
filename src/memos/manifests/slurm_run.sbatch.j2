@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --job-name=memos-run-{{ workload }}
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --time={{ time }}
+{% if nodelist %}#SBATCH --nodelist={{ nodelist }}
+{% endif %}{% if account %}#SBATCH --account={{ account }}
+{% endif %}{% if partition %}#SBATCH --partition={{ partition }}
+{% endif %}{% if container_image %}#SBATCH --container-image={{ container_image }}
+{% if container_mounts %}#SBATCH --container-mounts={{ container_mounts }}
+{% endif %}#SBATCH --no-container-mount-home
+{% endif %}#SBATCH --output={{ output_dir }}/run-%j.log
+
+set -euo pipefail
+pip install -e {{ repo_dir }} --quiet
+
+memos run {{ workload }} \
+  --hw {{ hw_path }} \
+  --model {{ model }} \
+{% if tp %}  --tp {{ tp }} \
+{% endif %}{% if context_lengths %}  --context-lengths "{{ context_lengths }}" \
+{% endif %}{% if repeats %}  --repeats {{ repeats }} \
+{% endif %}{% if cache_mode %}  --cache-mode {{ cache_mode }} \
+{% endif %}{% if output_tokens %}  --output-tokens {{ output_tokens }} \
+{% endif %}  --output {{ output_dir }}

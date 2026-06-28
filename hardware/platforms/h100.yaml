@@ -1,0 +1,6 @@
+name: h100
+gpu_model: H100
+gpus_per_node: 8
+nccl_env:
+  NCCL_NVLS_ENABLE: "1"
+nccl_max_bytes: "16G"

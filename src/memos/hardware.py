@@ -24,6 +24,9 @@ def load_hardware(path: str | Path) -> HardwareConfig:
             latency_us=t["latency_us"],
             cost_per_gb_hour=t.get("cost_per_gb_hour", 0.0),
             numa_distance=t.get("numa_distance", 10),
+            scope=t.get("scope", "node"),
+            multiplicity=t.get("multiplicity", 1),
+            method=t.get("method", ""),
         )
         for t in raw.get("tiers", [])
     ]
