@@ -88,13 +88,12 @@ class ContextSweep(Workload):
 
 
 def _make_prompt(target_tokens: int) -> str:
-    word = "the quick brown fox jumps over the lazy dog "
+    words = "the quick brown fox jumps over the lazy dog "
     approx_chars = target_tokens * 4
-    return (word * (approx_chars // len(word) + 1))[:approx_chars]
+    return (words * (approx_chars // len(words) + 1))[:approx_chars]
 
 
 def _make_prompt_unique(target_tokens: int) -> str:
-    """Generate a unique prompt so prefix caching can't help."""
-    prefix = "".join(random.choices(string.ascii_lowercase, k=20)) + " "
-    rest = _make_prompt(target_tokens)
-    return (prefix + rest)[: target_tokens * 4]
+    """Generate a fully random prompt so content is unpredictable."""
+    chars = string.ascii_lowercase + string.digits + " "
+    return "".join(random.choices(chars, k=target_tokens * 4))

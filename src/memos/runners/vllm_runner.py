@@ -67,8 +67,10 @@ class VLLMRunner(Runner):
 
         sampling_params = SamplingParams(
             max_tokens=params.max_tokens,
+            min_tokens=params.max_tokens,
             temperature=params.temperature,
             top_p=params.top_p,
+            ignore_eos=True,
             **params.extra,
         )
 
