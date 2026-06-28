@@ -252,14 +252,42 @@ def _run_nvbandwidth(
         return {}
 
 
+def _get_nvbw_testcases(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Handle both v0.8 (flat) and v0.9+ (nested under 'nvbandwidth') formats."""
+    if "nvbandwidth" in result:
+        return result["nvbandwidth"].get("testcases", [])
+    return result.get("testcases", [])
+
+
 def _extract_nvbw_bandwidth(result: dict[str, Any]) -> float:
+    """Extract the max bandwidth from nvbandwidth JSON output.
+
+    Handles both v0.8 format (results[].bandwidth) and v0.9+ format
+    (bandwidth_matrix[][] as string values with "N/A" on diagonal).
+    """
     try:
-        testcases = result.get("testcases", [])
+        testcases = _get_nvbw_testcases(result)
         if not testcases:
             return 0.0
-        results = testcases[0].get("results", [])
-        if not results:
-            return 0.0
+        tc = testcases[0]
+
+        # v0.9+: bandwidth_matrix is a 2D array of strings
+        matrix = tc.get("bandwidth_matrix")
+        if matrix:
+            bandwidths = []
+            for row in matrix:
+                for val in row:
+                    if isinstance(val, str) and val != "N/A":
+                        try:
+                            bandwidths.append(float(val))
+                        except ValueError:
+                            pass
+                    elif isinstance(val, (int, float)):
+                        bandwidths.append(float(val))
+            return max(bandwidths) if bandwidths else 0.0
+
+        # v0.8: results[].bandwidth
+        results = tc.get("results", [])
         bandwidths = []
         for r in results:
             bw = r.get("bandwidth")
@@ -273,11 +301,34 @@ def _extract_nvbw_bandwidth(result: dict[str, Any]) -> float:
 def _extract_nvbw_bandwidth_for_pair(
     result: dict[str, Any], src: int, dst: int
 ) -> float:
+    """Extract bandwidth for a specific GPU pair from nvbandwidth output."""
     try:
-        testcases = result.get("testcases", [])
+        testcases = _get_nvbw_testcases(result)
         if not testcases:
             return 0.0
-        results = testcases[0].get("results", [])
+        tc = testcases[0]
+
+        # v0.9+: bandwidth_matrix[src][dst]
+        matrix = tc.get("bandwidth_matrix")
+        if matrix and src < len(matrix) and dst < len(matrix[src]):
+            val = matrix[src][dst]
+            if isinstance(val, str) and val != "N/A":
+                return float(val)
+            elif isinstance(val, (int, float)):
+                return float(val)
+            # If N/A (same device), fall through to max
+            bandwidths = []
+            for row in matrix:
+                for v in row:
+                    if isinstance(v, str) and v != "N/A":
+                        try:
+                            bandwidths.append(float(v))
+                        except ValueError:
+                            pass
+            return max(bandwidths) if bandwidths else 0.0
+
+        # v0.8: results[].bandwidth with src/dst fields
+        results = tc.get("results", [])
         for r in results:
             if r.get("src") == src and r.get("dst") == dst:
                 return float(r.get("bandwidth", 0.0))
