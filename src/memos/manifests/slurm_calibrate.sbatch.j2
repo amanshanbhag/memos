@@ -21,18 +21,18 @@ OUTPUT_DIR={{ output_dir }}
 echo "=== Phase 1: Per-node local probes ==="
 srun --ntasks-per-node=1 --ntasks={{ nodes }} $CONTAINER_ARGS \
   bash -c "$SETUP && mkdir -p $OUTPUT_DIR && memos _probe-node --output $OUTPUT_DIR/node_\${SLURM_NODEID}.json"
+{% if nodes > 1 %}
 
 echo "=== Phase 2: Cross-node NCCL bandwidth ==="
 {% for key, val in platform.nccl_env.items() %}export {{ key }}={{ val }}
 {% endfor %}srun --mpi=pmix --ntasks-per-node={{ platform.gpus_per_node }} $CONTAINER_ARGS \
-  bash -c "$SETUP && sendrecv_perf -b 8 -e {{ platform.nccl_max_bytes }} -f 2 -g 1 -c 1 -n 100" \
-  > $OUTPUT_DIR/nccl_sendrecv.log 2>&1
+  bash -c "$SETUP && sendrecv_perf -b 8 -e {{ platform.nccl_max_bytes }} -f 2 -g 1 -c 1 -n 100 2>&1 | tee $OUTPUT_DIR/nccl_sendrecv.log"
 
 srun --mpi=pmix --ntasks-per-node={{ platform.gpus_per_node }} $CONTAINER_ARGS \
-  bash -c "$SETUP && all_reduce_perf -b 8 -e {{ platform.nccl_max_bytes }} -f 2 -g 1 -c 1 -n 100" \
-  > $OUTPUT_DIR/nccl_allreduce.log 2>&1
+  bash -c "$SETUP && all_reduce_perf -b 8 -e {{ platform.nccl_max_bytes }} -f 2 -g 1 -c 1 -n 100 2>&1 | tee $OUTPUT_DIR/nccl_allreduce.log"
+{% endif %}
 
-echo "=== Phase 3: Assemble ==="
+echo "=== Phase {{ '3' if nodes > 1 else '2' }}: Assemble ==="
 srun --ntasks=1 $CONTAINER_ARGS \
   bash -c "$SETUP && memos _assemble $OUTPUT_DIR --platform {{ platform.name }} --output {{ final_output }}"
 
