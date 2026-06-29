@@ -49,6 +49,31 @@ def _resolve_container_mounts(user_mounts: str | None, output_dir: str) -> str |
     return ",".join(mounts) if mounts else None
 
 
+def _resolve_repo_dir(container_mounts: str | None) -> str:
+    """Determine where the memos repo lives inside the container.
+
+    If user provided --container-mounts, check if cwd is mapped somewhere
+    else inside the container (e.g. /path/to/memos:/workspace/memos).
+    Otherwise cwd is the same inside and outside (auto-mounted identity).
+    """
+    import os
+
+    cwd = os.getcwd()
+
+    if container_mounts:
+        for mount in container_mounts.split(","):
+            parts = mount.split(":")
+            if len(parts) >= 2:
+                host_path = parts[0].rstrip("/")
+                container_path = parts[1].rstrip("/")
+                if cwd.rstrip("/") == host_path:
+                    return container_path
+                if cwd.rstrip("/").startswith(host_path + "/"):
+                    suffix = cwd[len(host_path) :]
+                    return container_path + suffix
+    return cwd
+
+
 def _parse_nodelist(nodelist: str | None) -> list[str]:
     """Split a comma-separated nodelist string into individual hostnames.
 
@@ -104,11 +129,9 @@ def render_calibrate_manifest(
     else:
         raise ValueError(f"Unsupported scheduler: {scheduler}. Use 'slurm' or 'k8s'.")
 
-    import os
-
     resolved_image = container_image or DEFAULT_CONTAINER_IMAGE
     resolved_mounts = _resolve_container_mounts(container_mounts, output_dir)
-    repo_dir = os.getcwd()
+    repo_dir = _resolve_repo_dir(resolved_mounts)
 
     context: dict[str, Any] = {
         "platform": platform,
@@ -168,7 +191,7 @@ def render_run_manifest(
 
     resolved_image = container_image or DEFAULT_CONTAINER_IMAGE
     resolved_mounts = _resolve_container_mounts(container_mounts, output_dir)
-    repo_dir = os.getcwd()
+    repo_dir = _resolve_repo_dir(resolved_mounts)
 
     context: dict[str, Any] = {
         "workload": workload,
