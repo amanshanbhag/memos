@@ -10,7 +10,7 @@
 {% endif %}{% if container_image %}#SBATCH --container-image={{ container_image }}
 {% if container_mounts %}#SBATCH --container-mounts={{ container_mounts }}
 {% endif %}#SBATCH --no-container-mount-home
-{% endif %}#SBATCH --output={{ output_dir }}/run-%j.log
+{% endif %}#SBATCH --output={{ host_output_dir }}/run-%j.log
 
 set -euo pipefail
 pip install -e {{ repo_dir }} --quiet
