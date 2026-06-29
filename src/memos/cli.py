@@ -362,7 +362,7 @@ def roofline(results_dir: str, hw: str, output: str | None) -> None:
     "--output-dir",
     "-o",
     required=True,
-    help="Shared filesystem path for intermediate results",
+    help="Output path for results (host path, auto-translated for containers)",
 )
 @click.option(
     "--nodelist",

@@ -49,29 +49,35 @@ def _resolve_container_mounts(user_mounts: str | None, output_dir: str) -> str |
     return ",".join(mounts) if mounts else None
 
 
-def _resolve_repo_dir(container_mounts: str | None) -> str:
-    """Determine where the memos repo lives inside the container.
+def _host_to_container_path(host_path: str, container_mounts: str | None) -> str:
+    """Translate a host path to its container-internal equivalent.
 
-    If user provided --container-mounts, check if cwd is mapped somewhere
-    else inside the container (e.g. /path/to/memos:/workspace/memos).
-    Otherwise cwd is the same inside and outside (auto-mounted identity).
+    Parses --container-mounts (host:container,...) and returns the
+    remapped path if host_path falls under a mount source. If no mount
+    matches, returns the original path (identity mount or no container).
     """
+    if not container_mounts:
+        return host_path
+
+    clean = host_path.rstrip("/")
+    for mount in container_mounts.split(","):
+        parts = mount.split(":")
+        if len(parts) < 2:
+            continue
+        src = parts[0].rstrip("/")
+        dst = parts[1].rstrip("/")
+        if clean == src:
+            return dst
+        if clean.startswith(src + "/"):
+            return dst + clean[len(src) :]
+    return host_path
+
+
+def _resolve_repo_dir(container_mounts: str | None) -> str:
+    """Determine where the memos repo lives inside the container."""
     import os
 
-    cwd = os.getcwd()
-
-    if container_mounts:
-        for mount in container_mounts.split(","):
-            parts = mount.split(":")
-            if len(parts) >= 2:
-                host_path = parts[0].rstrip("/")
-                container_path = parts[1].rstrip("/")
-                if cwd.rstrip("/") == host_path:
-                    return container_path
-                if cwd.rstrip("/").startswith(host_path + "/"):
-                    suffix = cwd[len(host_path) :]
-                    return container_path + suffix
-    return cwd
+    return _host_to_container_path(os.getcwd(), container_mounts)
 
 
 def _parse_nodelist(nodelist: str | None) -> list[str]:
@@ -132,13 +138,15 @@ def render_calibrate_manifest(
     resolved_image = container_image or DEFAULT_CONTAINER_IMAGE
     resolved_mounts = _resolve_container_mounts(container_mounts, output_dir)
     repo_dir = _resolve_repo_dir(resolved_mounts)
+    c_output_dir = _host_to_container_path(output_dir, resolved_mounts).rstrip("/")
+    c_final_output = _host_to_container_path(final_output, resolved_mounts)
 
     context: dict[str, Any] = {
         "platform": platform,
         "nodes": nodes,
         "gpus_per_node": platform.gpus_per_node,
-        "output_dir": output_dir.rstrip("/"),
-        "final_output": final_output,
+        "output_dir": c_output_dir,
+        "final_output": c_final_output,
         "nccl_env": platform.nccl_env,
         "nccl_max_bytes": platform.nccl_max_bytes,
         "repo_dir": repo_dir,
@@ -192,15 +200,17 @@ def render_run_manifest(
     resolved_image = container_image or DEFAULT_CONTAINER_IMAGE
     resolved_mounts = _resolve_container_mounts(container_mounts, output_dir)
     repo_dir = _resolve_repo_dir(resolved_mounts)
+    c_output_dir = _host_to_container_path(output_dir, resolved_mounts).rstrip("/")
+    c_hw_path = _host_to_container_path(hw_path, resolved_mounts)
 
     context: dict[str, Any] = {
         "workload": workload,
-        "hw_path": hw_path,
+        "hw_path": c_hw_path,
         "model": model,
         "repo_dir": repo_dir,
         "nodes": nodes,
         "gpus_per_node": gpus_per_node,
-        "output_dir": output_dir.rstrip("/"),
+        "output_dir": c_output_dir,
         "tp": tp,
         "context_lengths": context_lengths,
         "repeats": repeats,
