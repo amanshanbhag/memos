@@ -26,3 +26,6 @@ results/
 
 # Scratch
 .scratch/
+
+# Local scripts
+scripts/

@@ -81,6 +81,11 @@ def main() -> None:
 )
 @click.option("--namespace", default=None, help="K8s namespace")
 @click.option("--pvc", default=None, help="K8s PVC for shared results storage")
+@click.option(
+    "--env",
+    multiple=True,
+    help="Environment variables for container (e.g. --env HF_TOKEN=hf_...)",
+)
 def run(
     workload_name: str,
     hw: str,
@@ -105,6 +110,7 @@ def run(
     nodelist: str | None,
     namespace: str | None,
     pvc: str | None,
+    env: tuple[str, ...],
 ) -> None:
     """Run a benchmark workload (or generate a scheduler manifest with --scheduler)."""
     hw_config = load_hardware(hw)
@@ -126,6 +132,8 @@ def run(
             repeats=repeats,
             cache_mode=cache_mode,
             output_tokens=output_tokens,
+            engine_args=list(engine_arg),
+            env_vars=list(env),
             nodelist=nodelist,
             time=time_limit,
             account=account,

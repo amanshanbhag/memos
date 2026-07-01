@@ -25,7 +25,8 @@ metadata:
         - -c
         - |
           set -euo pipefail
-          pip install -e {{ repo_dir }} --quiet
+{% for ev in env_vars %}          export {{ ev }}
+{% endfor %}          pip install -e {{ repo_dir }} --quiet
           memos run {{ workload }} \
             --hw {{ hw_path }} \
             --model {{ model }} \
@@ -34,7 +35,8 @@ metadata:
 {% endif %}{% if repeats %}            --repeats {{ repeats }} \
 {% endif %}{% if cache_mode %}            --cache-mode {{ cache_mode }} \
 {% endif %}{% if output_tokens %}            --output-tokens {{ output_tokens }} \
-{% endif %}            --output {{ output_dir }}
+{% endif %}{% for ea in engine_args %}            --engine-arg {{ ea }} \
+{% endfor %}            --output {{ output_dir }}
         resources:
           limits:
             nvidia.com/gpu: {{ gpus_per_node }}
