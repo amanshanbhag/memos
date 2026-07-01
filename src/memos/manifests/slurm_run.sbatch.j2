@@ -7,7 +7,8 @@
 {% if nodelist %}#SBATCH --nodelist={{ nodelist }}
 {% endif %}{% if account %}#SBATCH --account={{ account }}
 {% endif %}{% if partition %}#SBATCH --partition={{ partition }}
-{% endif %}#SBATCH --output={{ host_output_dir }}/run-%j.log
+{% endif %}{% for sa in slurm_args %}#SBATCH --{{ sa }}
+{% endfor %}#SBATCH --output={{ host_output_dir }}/run-%j.log
 
 set -euo pipefail
 

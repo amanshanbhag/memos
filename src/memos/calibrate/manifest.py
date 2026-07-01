@@ -117,6 +117,7 @@ def render_calibrate_manifest(
     partition: str | None = None,
     container_image: str | None = None,
     container_mounts: str | None = None,
+    slurm_args: list[str] | None = None,
     namespace: str | None = None,
     pvc: str | None = None,
 ) -> str:
@@ -159,6 +160,7 @@ def render_calibrate_manifest(
         "image": resolved_image,
         "container_image": resolved_image,
         "container_mounts": resolved_mounts or "",
+        "slurm_args": slurm_args or [],
         "k8s_namespace": namespace or "",
         "pvc": pvc,
     }
@@ -181,6 +183,7 @@ def render_run_manifest(
     output_tokens: str = "128",
     engine_args: list[str] | None = None,
     env_vars: list[str] | None = None,
+    slurm_args: list[str] | None = None,
     nodelist: str | None = None,
     time: str = "02:00:00",
     account: str | None = None,
@@ -222,6 +225,7 @@ def render_run_manifest(
         "output_tokens": output_tokens,
         "engine_args": engine_args or [],
         "env_vars": env_vars or [],
+        "slurm_args": slurm_args or [],
         "nodelist": nodelist or "",
         "nodelist_items": _parse_nodelist(nodelist),
         "time": time,

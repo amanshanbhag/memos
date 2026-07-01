@@ -86,6 +86,11 @@ def main() -> None:
     multiple=True,
     help="Environment variables for container (e.g. --env HF_TOKEN=hf_...)",
 )
+@click.option(
+    "--slurm-arg",
+    multiple=True,
+    help="Extra SLURM directives (e.g. --slurm-arg reservation=my_res)",
+)
 def run(
     workload_name: str,
     hw: str,
@@ -111,6 +116,7 @@ def run(
     namespace: str | None,
     pvc: str | None,
     env: tuple[str, ...],
+    slurm_arg: tuple[str, ...],
 ) -> None:
     """Run a benchmark workload (or generate a scheduler manifest with --scheduler)."""
     hw_config = load_hardware(hw)
@@ -134,6 +140,7 @@ def run(
             output_tokens=output_tokens,
             engine_args=list(engine_arg),
             env_vars=list(env),
+            slurm_args=list(slurm_arg),
             nodelist=nodelist,
             time=time_limit,
             account=account,
@@ -405,6 +412,11 @@ def roofline(results_dir: str, hw: str, output: str | None) -> None:
     type=click.Path(),
     help="Write manifest to path (default: stdout)",
 )
+@click.option(
+    "--slurm-arg",
+    multiple=True,
+    help="Extra SLURM directives (e.g. --slurm-arg reservation=my_res)",
+)
 def calibrate(
     platform: str,
     scheduler: str,
@@ -419,6 +431,7 @@ def calibrate(
     namespace: str | None,
     pvc: str | None,
     manifest_path: str | None,
+    slurm_arg: tuple[str, ...],
 ) -> None:
     """Generate a calibration manifest for multi-node hardware measurement.
 
@@ -453,6 +466,7 @@ def calibrate(
         partition=partition,
         container_image=container_image,
         container_mounts=container_mounts,
+        slurm_args=list(slurm_arg),
         namespace=namespace,
         pvc=pvc,
     )
