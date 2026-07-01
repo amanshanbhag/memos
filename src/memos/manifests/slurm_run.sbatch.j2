@@ -15,12 +15,12 @@ set -euo pipefail
 {% else %}CONTAINER_ARGS=""
 {% endif %}
 srun $CONTAINER_ARGS bash -c "
-  pip install -e {{ repo_dir }} --quiet
+  pip install -e {{ repo_dir }} --quiet 2>/dev/null
   memos run {{ workload }} \
     --hw {{ hw_path }} \
     --model {{ model }} \
 {% if tp %}    --tp {{ tp }} \
-{% endif %}{% if context_lengths %}    --context-lengths '{{ context_lengths }}' \
+{% endif %}{% if input_tokens %}    --input-tokens '{{ input_tokens }}' \
 {% endif %}{% if repeats %}    --repeats {{ repeats }} \
 {% endif %}{% if cache_mode %}    --cache-mode {{ cache_mode }} \
 {% endif %}{% if output_tokens %}    --output-tokens {{ output_tokens }} \

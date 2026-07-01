@@ -23,7 +23,14 @@ class ThroughputCollector(MetricCollector):
         duration_ms: float,
         **kwargs: Any,
     ) -> None:
-        ctx = {"context_length": self._current_context, "request_id": request_id}
+        ctx: dict[str, Any] = {
+            "context_length": self._current_context,
+            "request_id": request_id,
+        }
+        if "output_tokens" in kwargs:
+            ctx["output_tokens"] = kwargs["output_tokens"]
+        if "actual_isl" in kwargs:
+            ctx["actual_isl"] = kwargs["actual_isl"]
 
         if duration_ms > 0 and tokens_generated > 0:
             tps = tokens_generated / (duration_ms / 1000)

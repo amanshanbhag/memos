@@ -4,24 +4,25 @@ import random
 import string
 
 from memos.metrics.base import MetricCollector
-from memos.runners.base import GenerateParams, Runner
+from memos.runners.base import GenerateParams, Prompt, Runner
 from memos.types import BenchmarkResult, HardwareConfig, MetricSample
 from memos.workloads.base import Workload
 
-DEFAULT_CONTEXT_LENGTHS = [4096, 8192, 16384, 32768, 65536, 131072]
+DEFAULT_ISLS = [4096, 8192, 16384, 32768, 65536, 128000]
+DEFAULT_OSLS = [128]
 
 
 class ContextSweep(Workload):
 
     def __init__(
         self,
-        context_lengths: list[int] | None = None,
-        output_tokens: int = 128,
+        isls: list[int] | None = None,
+        osls: list[int] | None = None,
         repeats: int = 3,
         cache_mode: str = "cold",
     ) -> None:
-        self._context_lengths = context_lengths or DEFAULT_CONTEXT_LENGTHS
-        self._output_tokens = output_tokens
+        self._isls = isls or DEFAULT_ISLS
+        self._osls = osls or DEFAULT_OSLS
         self._repeats = repeats
         self._cache_mode = cache_mode
 
@@ -29,7 +30,10 @@ class ContextSweep(Workload):
         return "context_sweep"
 
     def description(self) -> str:
-        return f"Context length sweep: {self._context_lengths}, {self._repeats} repeats each"
+        return (
+            f"ISL x OSL sweep: ISL={self._isls}, OSL={self._osls}, "
+            f"{self._repeats} repeats each"
+        )
 
     def run(
         self,
@@ -39,25 +43,27 @@ class ContextSweep(Workload):
         model: str = "",
     ) -> BenchmarkResult:
         all_metrics: list[MetricSample] = []
-        params = GenerateParams(max_tokens=self._output_tokens)
+        combos = [(isl, osl) for isl in self._isls for osl in self._osls]
 
-        # Warmup: 5 throwaway requests per context length to trigger compilation
-        for ctx_len in self._context_lengths:
+        tokenizer = runner.tokenizer
+
+        for isl, osl in combos:
+            params = GenerateParams(max_tokens=osl)
             for _ in range(5):
-                prompt = _make_prompt_unique(ctx_len)
+                prompt = _make_exact_prompt(isl, tokenizer, unique=True)
                 runner.generate([prompt], params)
 
-        for ctx_len in self._context_lengths:
+        for isl, osl in combos:
+            params = GenerateParams(max_tokens=osl)
             for repeat in range(self._repeats):
-                request_id = f"ctx{ctx_len}_r{repeat}"
+                request_id = f"isl{isl}_osl{osl}_r{repeat}"
+                unique = self._cache_mode == "cold"
+                prompt = _make_exact_prompt(isl, tokenizer, unique=unique)
 
-                if self._cache_mode == "cold":
-                    prompt = _make_prompt_unique(ctx_len)
-                else:
-                    prompt = _make_prompt(ctx_len)
+                actual_isl = len(prompt) if isinstance(prompt, list) else isl
 
                 for c in collectors:
-                    c.on_generate_start(request_id, ctx_len)
+                    c.on_generate_start(request_id, actual_isl)
 
                 results = runner.generate([prompt], params)
                 result = results[0]
@@ -67,6 +73,8 @@ class ContextSweep(Workload):
                         request_id,
                         result.generated_tokens,
                         result.duration_ms,
+                        output_tokens=osl,
+                        actual_isl=result.prompt_tokens,
                         **result.extra,
                     )
 
@@ -78,8 +86,8 @@ class ContextSweep(Workload):
             hardware=hw.name,
             model=model,
             params={
-                "context_lengths": self._context_lengths,
-                "output_tokens": self._output_tokens,
+                "isls": self._isls,
+                "osls": self._osls,
                 "repeats": self._repeats,
                 "cache_mode": self._cache_mode,
             },
@@ -87,13 +95,24 @@ class ContextSweep(Workload):
         )
 
 
-def _make_prompt(target_tokens: int) -> str:
-    words = "the quick brown fox jumps over the lazy dog "
-    approx_chars = target_tokens * 4
-    return (words * (approx_chars // len(words) + 1))[:approx_chars]
+def _make_exact_prompt(target_tokens: int, tokenizer, unique: bool = True) -> list[int]:
+    """Generate a prompt with exactly target_tokens token IDs.
 
+    Overshoots with raw text, tokenizes, then truncates to the exact length.
+    Returns token IDs directly to bypass any tokenizer ambiguity.
+    """
+    overshoot = int(target_tokens * 5)
+    if unique:
+        chars = string.ascii_lowercase + string.digits + " "
+        raw = "".join(random.choices(chars, k=overshoot))
+    else:
+        words = "the quick brown fox jumps over the lazy dog "
+        raw = (words * (overshoot // len(words) + 1))[:overshoot]
 
-def _make_prompt_unique(target_tokens: int) -> str:
-    """Generate a fully random prompt so content is unpredictable."""
-    chars = string.ascii_lowercase + string.digits + " "
-    return "".join(random.choices(chars, k=target_tokens * 4))
+    token_ids = tokenizer.encode(raw)
+
+    if len(token_ids) < target_tokens:
+        extra_raw = "".join(random.choices(string.ascii_lowercase, k=overshoot))
+        token_ids.extend(tokenizer.encode(extra_raw))
+
+    return token_ids[:target_tokens]

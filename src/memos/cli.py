@@ -25,7 +25,7 @@ def main() -> None:
 @click.option("--hw", required=True, type=click.Path(), help="Hardware config YAML")
 @click.option("--model", required=True, help="Model name or path")
 @click.option(
-    "--output", default="results/", type=click.Path(), help="Output directory"
+    "--output", "-o", default="results/", type=click.Path(), help="Output directory"
 )
 @click.option(
     "--tp", default=None, type=int, help="Tensor parallel size (default: hw.gpu_count)"
@@ -33,10 +33,18 @@ def main() -> None:
 @click.option("--pp", default=None, type=int, help="Pipeline parallel size")
 @click.option("--dp", default=None, type=int, help="Data parallel size")
 @click.option("--cache-mode", default="cold", type=click.Choice(["cold", "warm"]))
-@click.option("--context-lengths", default=None, help="Comma-separated context lengths")
+@click.option(
+    "--input-tokens",
+    "--isl",
+    default=None,
+    help="Input sequence lengths, comma-separated (e.g. 4096,8192,16384)",
+)
 @click.option("--repeats", default=3, type=int, help="Repeats per context length")
 @click.option(
-    "--output-tokens", default=128, type=int, help="Tokens to generate per request"
+    "--output-tokens",
+    "--osl",
+    default="128",
+    help="Output sequence lengths, comma-separated (e.g. 128 or 128,512,2048)",
 )
 @click.option(
     "--engine-arg",
@@ -82,9 +90,9 @@ def run(
     pp: int | None,
     dp: int | None,
     cache_mode: str,
-    context_lengths: str | None,
+    input_tokens: str | None,
     repeats: int,
-    output_tokens: int,
+    output_tokens: str,
     engine_arg: tuple[str, ...],
     scheduler: str | None,
     manifest_path: str | None,
@@ -114,7 +122,7 @@ def run(
             output_dir=output,
             nodes=nodes,
             tp=tp,
-            context_lengths=context_lengths,
+            input_tokens=input_tokens,
             repeats=repeats,
             cache_mode=cache_mode,
             output_tokens=output_tokens,
@@ -173,9 +181,9 @@ def run(
     click.echo(f"  weight_bytes={profile.weight_bytes() / 1e9:.2f} GB")
     click.echo()
 
-    ctx_lens = None
-    if context_lengths:
-        ctx_lens = [int(x.strip()) for x in context_lengths.split(",")]
+    isls = None
+    if input_tokens:
+        isls = [int(x.strip()) for x in input_tokens.split(",")]
 
     env = detect_environment()
     click.echo(
@@ -211,9 +219,10 @@ def run(
 
     collectors = [ThroughputCollector()]
 
+    osls = [int(x.strip()) for x in output_tokens.split(",")]
     workload = workloads[workload_name](
-        context_lengths=ctx_lens,
-        output_tokens=output_tokens,
+        isls=isls,
+        osls=osls,
         repeats=repeats,
         cache_mode=cache_mode,
     )
@@ -233,15 +242,16 @@ def run(
 
     tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
     if tps_samples:
-        by_ctx: dict[int, list[float]] = {}
+        by_combo: dict[tuple[int, int], list[float]] = {}
         for s in tps_samples:
-            ctx = s.context.get("context_length", 0)
-            by_ctx.setdefault(ctx, []).append(s.value)
-        click.echo("\nTokens/sec by context length:")
-        for ctx in sorted(by_ctx):
-            vals = by_ctx[ctx]
+            isl = s.context.get("context_length", 0)
+            osl = s.context.get("output_tokens", 0)
+            by_combo.setdefault((isl, osl), []).append(s.value)
+        click.echo("\nTokens/sec by ISL x OSL:")
+        for isl, osl in sorted(by_combo):
+            vals = by_combo[(isl, osl)]
             avg = sum(vals) / len(vals)
-            click.echo(f"  {ctx:>8} tokens: {avg:>10.1f} tok/s")
+            click.echo(f"  ISL={isl:>7}  OSL={osl:>5}: {avg:>10.1f} tok/s")
 
     runner.shutdown()
 

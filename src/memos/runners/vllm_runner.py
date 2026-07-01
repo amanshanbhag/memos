@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from memos.runners.base import GenerateParams, GenerateResult, Runner
+from memos.runners.base import GenerateParams, GenerateResult, Prompt, Runner
 from memos.types import HardwareConfig
 
 
@@ -39,6 +39,13 @@ class VLLMRunner(Runner):
             **kwargs,
         )
 
+    @property
+    def tokenizer(self):
+        """Return the underlying tokenizer for exact prompt construction."""
+        if self._llm is None:
+            raise RuntimeError("Runner not set up; call setup() first")
+        return self._llm.get_tokenizer()
+
     def get_metrics(self) -> dict[str, float]:
         if self._llm is None:
             return {}
@@ -61,7 +68,7 @@ class VLLMRunner(Runner):
         return result
 
     def generate(
-        self, prompts: list[str], params: GenerateParams
+        self, prompts: list[Prompt], params: GenerateParams
     ) -> list[GenerateResult]:
         from vllm import SamplingParams
 
@@ -74,11 +81,24 @@ class VLLMRunner(Runner):
             **params.extra,
         )
 
+        text_prompts: list[str] = []
+        token_id_prompts: list[dict] = []
+        uses_token_ids = False
+
+        for p in prompts:
+            if isinstance(p, list):
+                token_id_prompts.append({"prompt_token_ids": p})
+                uses_token_ids = True
+            else:
+                text_prompts.append(p)
+
         start = time.perf_counter()
-        outputs = self._llm.generate(prompts, sampling_params)
+        if uses_token_ids:
+            outputs = self._llm.generate(token_id_prompts, sampling_params)
+        else:
+            outputs = self._llm.generate(text_prompts, sampling_params)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        # Pull cache metrics snapshot after generation
         metrics = self.get_metrics()
 
         results = []

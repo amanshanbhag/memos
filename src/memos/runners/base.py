@@ -28,6 +28,9 @@ class GenerateResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+Prompt = str | list[int]
+
+
 class Runner(ABC):
     """Abstract interface for an inference engine."""
 
@@ -36,11 +39,17 @@ class Runner(ABC):
         """Load the model and prepare for generation."""
         ...
 
+    @property
+    @abstractmethod
+    def tokenizer(self):
+        """Return the tokenizer for exact prompt construction."""
+        ...
+
     @abstractmethod
     def generate(
-        self, prompts: list[str], params: GenerateParams
+        self, prompts: list[Prompt], params: GenerateParams
     ) -> list[GenerateResult]:
-        """Run generation on a batch of prompts."""
+        """Run generation on a batch of prompts (text strings or token ID lists)."""
         ...
 
     @abstractmethod
