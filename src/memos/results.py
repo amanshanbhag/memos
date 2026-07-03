@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from memos.types import BenchmarkResult, MetricSample
+from memos.types import BenchmarkResult, InferenceConfig, MetricSample
 
 
 def save_result(result: BenchmarkResult, path: str | Path) -> Path:
@@ -21,4 +21,7 @@ def load_result(path: str | Path) -> BenchmarkResult:
     with open(path) as f:
         raw = json.load(f)
     raw["metrics"] = [MetricSample(**m) for m in raw.get("metrics", [])]
+    inf = raw.get("inference_config")
+    if isinstance(inf, dict):
+        raw["inference_config"] = InferenceConfig(**inf)
     return BenchmarkResult(**raw)

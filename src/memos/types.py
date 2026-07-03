@@ -42,6 +42,24 @@ class MetricSample:
 
 
 @dataclass
+class InferenceConfig:
+    """Inference runtime knobs that affect roofline calculations."""
+
+    tp: int = 1
+    pp: int = 1
+    dp: int = 1
+    batch_size: int = 1
+    cache_mode: str = "cold"
+    weight_dtype_bytes: float = 2.0
+    kv_dtype_bytes: float = 2.0
+    weight_group_size: int = 0  # 0 means no group quantization metadata overhead
+    activation_dtype: str = "fp16"
+    speculative: bool = False
+    mtp: bool = False
+    engine_args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class BenchmarkResult:
     """Complete result from running one workload on one hardware config."""
 
@@ -51,6 +69,7 @@ class BenchmarkResult:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     params: dict[str, Any] = field(default_factory=dict)
     metrics: list[MetricSample] = field(default_factory=list)
+    inference_config: InferenceConfig | None = None
     environment: dict[str, Any] = field(
         default_factory=dict
     )  # from detect_environment()

@@ -1,62 +1,75 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from memos.roofline.model import RooflineCeilings
+
+@dataclass
+class RooflinePoint:
+    label: str
+    arithmetic_intensity: float
+    measured_flops_per_sec: float
 
 
 def plot_roofline(
-    ceilings: list[RooflineCeilings],
-    labels: list[str],
-    measured_tokens_per_sec: list[float] | None = None,
+    points: list[RooflinePoint],
+    tier_bandwidths_gbps: dict[str, float],
+    peak_flops: float,
     title: str = "Memory Roofline",
     output: str | Path | None = None,
 ) -> None:
-    """Plot a memory roofline chart.
+    """Plot classic roofline: FLOPs/s vs arithmetic intensity."""
+    if not points:
+        return
 
-    Args:
-        ceilings: Roofline ceilings for each workload/config.
-        labels: Label for each data point.
-        measured_tokens_per_sec: Actual measured throughput (optional overlay).
-        title: Chart title.
-        output: Save path (if None, calls plt.show()).
-    """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(10, 7))
 
-    x = np.arange(len(labels))
-    width = 0.25
+    ais = np.array([max(p.arithmetic_intensity, 1e-12) for p in points], dtype=float)
+    yvals = np.array(
+        [max(p.measured_flops_per_sec, 1e-12) for p in points], dtype=float
+    )
 
-    compute_vals = [c.compute_ceiling for c in ceilings]
-    bw_vals = [c.bandwidth_ceiling for c in ceilings]
-    fault_vals = [
-        min(c.fault_ceiling, max(compute_vals + bw_vals) * 2) for c in ceilings
-    ]
+    x_min = min(ais.min(), 1e-4)
+    x_max = max(ais.max(), 1.0)
+    x_line = np.logspace(np.log10(x_min / 2), np.log10(x_max * 2), 400)
 
-    ax.bar(x - width, compute_vals, width, label="Compute ceiling")
-    ax.bar(x, bw_vals, width, label="Bandwidth ceiling")
-    ax.bar(x + width, fault_vals, width, label="Fault ceiling")
+    for tier_name, bw_gbps in sorted(
+        tier_bandwidths_gbps.items(), key=lambda kv: kv[1], reverse=True
+    ):
+        y_line = np.minimum(peak_flops, x_line * bw_gbps * 1e9)
+        ax.plot(x_line, y_line, label=f"{tier_name} ({bw_gbps:.1f} GB/s)")
 
-    if measured_tokens_per_sec:
-        ax.scatter(
-            x,
-            measured_tokens_per_sec,
-            color="red",
-            zorder=5,
-            s=100,
-            marker="x",
-            label="Measured",
+    ax.hlines(
+        y=peak_flops,
+        xmin=x_line.min(),
+        xmax=x_line.max(),
+        colors="k",
+        linestyles="--",
+        label=f"Compute peak ({peak_flops:.2e} FLOP/s)",
+    )
+
+    ax.scatter(ais, yvals, c="red", marker="x", s=80, zorder=5, label="Measured")
+    for point in points:
+        ax.annotate(
+            point.label,
+            (
+                max(point.arithmetic_intensity, 1e-12),
+                max(point.measured_flops_per_sec, 1e-12),
+            ),
+            fontsize=8,
+            xytext=(4, 4),
+            textcoords="offset points",
         )
 
-    ax.set_xlabel("Workload")
-    ax.set_ylabel("Tokens/sec")
-    ax.set_title(title)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.legend()
+    ax.set_xscale("log")
     ax.set_yscale("log")
+    ax.set_xlabel("Arithmetic Intensity (FLOP/byte)")
+    ax.set_ylabel("Performance (FLOP/s)")
+    ax.set_title(title)
+    ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
 
     if output:

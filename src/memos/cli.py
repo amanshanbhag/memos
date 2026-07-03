@@ -7,6 +7,53 @@ from pathlib import Path
 import click
 
 from memos.hardware import load_hardware
+from memos.types import InferenceConfig
+
+
+def _parse_engine_arg_value(raw: str) -> int | float | bool | str:
+    if raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    try:
+        return int(raw)
+    except ValueError:
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+
+
+def _infer_kv_dtype_bytes(engine_args: dict[str, object]) -> float:
+    kv_dtype = str(engine_args.get("kv_cache_dtype", "fp16")).lower()
+    if "fp8" in kv_dtype or kv_dtype in {"int8", "uint8"}:
+        return 1.0
+    if "int4" in kv_dtype or "fp4" in kv_dtype:
+        return 0.5
+    return 2.0
+
+
+def _infer_weight_dtype_bytes(engine_args: dict[str, object]) -> float:
+    quant = str(engine_args.get("quantization", "")).lower()
+    dtype = str(engine_args.get("dtype", "fp16")).lower()
+    if any(k in quant for k in ("awq", "gptq", "int4", "fp4")):
+        return 0.5
+    if any(k in quant for k in ("int8", "fp8")):
+        return 1.0
+    if "fp8" in dtype:
+        return 1.0
+    return 2.0
+
+
+def _infer_precision(inference: InferenceConfig | None) -> str:
+    if inference is None:
+        return "fp16"
+    act = inference.activation_dtype.lower()
+    if "fp4" in act:
+        return "fp4"
+    if "fp8" in act:
+        return "fp8"
+    if "int8" in act:
+        return "int8"
+    return "fp16"
 
 
 @click.group()
@@ -217,18 +264,14 @@ def run(
         runner_kwargs["data_parallel_size"] = dp
     runner_kwargs["enable_prefix_caching"] = cache_mode == "warm"
 
+    parsed_engine_args: dict[str, object] = {}
     for arg in engine_arg:
         k, _, v = arg.partition("=")
-        if v.lower() in ("true", "false"):
-            runner_kwargs[k] = v.lower() == "true"
-        else:
-            try:
-                runner_kwargs[k] = int(v)
-            except ValueError:
-                try:
-                    runner_kwargs[k] = float(v)
-                except ValueError:
-                    runner_kwargs[k] = v
+        if not k:
+            continue
+        parsed_val = _parse_engine_arg_value(v)
+        parsed_engine_args[k] = parsed_val
+        runner_kwargs[k] = parsed_val
 
     runner.setup(model, hw_config, **runner_kwargs)
 
@@ -249,6 +292,27 @@ def run(
     result = workload.run(runner, hw_config, collectors, model=model)
     result.environment = dataclasses.asdict(env)
     result.raw["model_profile"] = profile.to_dict()
+    result.inference_config = InferenceConfig(
+        tp=tp if tp is not None else hw_config.gpu_count,
+        pp=pp if pp is not None else 1,
+        dp=dp if dp is not None else 1,
+        batch_size=1,
+        cache_mode=cache_mode,
+        weight_dtype_bytes=_infer_weight_dtype_bytes(parsed_engine_args),
+        kv_dtype_bytes=_infer_kv_dtype_bytes(parsed_engine_args),
+        weight_group_size=int(parsed_engine_args.get("weight_group_size", 0) or 0),
+        activation_dtype=str(parsed_engine_args.get("dtype", "fp16")),
+        speculative=(
+            "speculative_model" in parsed_engine_args
+            or int(parsed_engine_args.get("num_speculative_tokens", 0) or 0) > 0
+        ),
+        mtp=(
+            "mtp" in parsed_engine_args
+            or "medusa" in parsed_engine_args
+            or int(parsed_engine_args.get("num_lookahead_slots", 0) or 0) > 0
+        ),
+        engine_args=parsed_engine_args,
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{workload_name}_{hw_config.name}_{timestamp}.json"
@@ -277,90 +341,147 @@ def run(
 
 
 @main.command()
-@click.argument("results_dir", type=click.Path(exists=True))
+@click.argument("results_path", type=click.Path(exists=True))
 @click.option(
     "--hw", required=True, type=click.Path(exists=True), help="Hardware config YAML"
 )
 @click.option("--output", default=None, type=click.Path(), help="Save plot to file")
-def roofline(results_dir: str, hw: str, output: str | None) -> None:
-    """Generate a memory roofline plot from benchmark results."""
+def roofline(results_path: str, hw: str, output: str | None) -> None:
+    """Generate a classic roofline plot from benchmark results."""
     from memos.model_profile import ModelProfile
     from memos.results import load_result
     from memos.roofline.model import compute_ceilings
-    from memos.roofline.plot import plot_roofline
+    from memos.roofline.plot import RooflinePoint, plot_roofline
 
     hw_config = load_hardware(hw)
-    results_path = Path(results_dir)
+    input_path = Path(results_path)
+    if input_path.is_file():
+        result_files = [input_path]
+    else:
+        result_files = sorted(input_path.rglob("*.json"))
 
-    result_files = list(results_path.glob("*.json"))
     if not result_files:
-        click.echo(f"No result JSON files found in {results_dir}")
+        click.echo(f"No result JSON files found in {results_path}")
         return
 
     click.echo(f"Found {len(result_files)} result file(s)")
     click.echo(f"Hardware: {hw_config.name}")
 
-    all_ceilings = []
-    all_labels = []
-    all_measured = []
+    points: list[RooflinePoint] = []
+    all_precisions: set[str] = set()
+    all_ceiling_checks: list[tuple[str, float, float, str]] = []
 
-    for rf in sorted(result_files):
+    for rf in result_files:
         result = load_result(rf)
-        tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
-
         profile_dict = result.raw.get("model_profile")
-        profile = ModelProfile.from_dict(profile_dict) if profile_dict else None
+        if not profile_dict:
+            continue
+        profile = ModelProfile.from_dict(profile_dict)
 
-        by_ctx: dict[int, list[float]] = {}
-        for s in tps_samples:
-            ctx = s.context.get("context_length", 0)
-            by_ctx.setdefault(ctx, []).append(s.value)
+        inference = result.inference_config or InferenceConfig()
+        precision = _infer_precision(inference)
+        all_precisions.add(precision)
+        config_name = rf.parent.name
 
-        for ctx in sorted(by_ctx):
-            avg_tps = sum(by_ctx[ctx]) / len(by_ctx[ctx])
-            dur_samples = [
-                m
-                for m in result.metrics
-                if m.name == "duration_ms" and m.context.get("context_length") == ctx
-            ]
-            avg_dur = (
-                sum(s.value for s in dur_samples) / len(dur_samples)
-                if dur_samples
-                else 1.0
+        tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
+        by_combo: dict[tuple[int, int], list[float]] = {}
+        for sample in tps_samples:
+            isl = int(sample.context.get("context_length", 0))
+            osl = int(sample.context.get("output_tokens", 0))
+            by_combo.setdefault((isl, osl), []).append(sample.value)
+
+        for (isl, osl), vals in sorted(by_combo.items()):
+            if not vals or isl <= 0:
+                continue
+            avg_tps = sum(vals) / len(vals)
+
+            flops_per_token = profile.flops_per_token(
+                seq=isl, inference_config=inference
             )
+            bytes_per_token = profile.bytes_per_token(
+                seq=isl, inference_config=inference
+            )
+            if bytes_per_token <= 0 or flops_per_token <= 0:
+                continue
 
-            if profile:
-                flops = profile.flops_per_token(seq=ctx)
-                bw = profile.bytes_per_token(seq=ctx)
-            else:
-                flops = float(hw_config.metadata.get("peak_flops", 1e15)) / 1000
-                bw = ctx * 2
+            weight_bytes = profile.weight_bytes()
+            weight_scaled = weight_bytes * (
+                inference.weight_dtype_bytes / max(float(profile.dtype_bytes), 1e-9)
+            )
+            if inference.weight_group_size > 0:
+                weight_scaled *= 1.0 + (
+                    4.0
+                    / (
+                        inference.weight_group_size
+                        * max(float(inference.weight_dtype_bytes), 1e-9)
+                    )
+                )
+            tp = max(inference.tp, 1)
+            batch = max(inference.batch_size, 1)
+            working_set = (weight_scaled / tp) + (
+                profile.kv_cache_bytes(seq=isl, batch=batch) / tp
+            )
 
             ceilings = compute_ceilings(
                 hw=hw_config,
-                flops_per_token=flops,
-                bytes_per_token=bw,
+                flops_per_token=flops_per_token,
+                bytes_per_token=bytes_per_token,
+                working_set_bytes=working_set,
+                precision=precision,
             )
-            all_ceilings.append(ceilings)
-            label = f"{ctx}T" if ctx < 1024 else f"{ctx // 1024}K"
-            all_labels.append(label)
-            all_measured.append(avg_tps)
+            ai = flops_per_token / bytes_per_token
+            measured_flops = avg_tps * flops_per_token
+            points.append(
+                RooflinePoint(
+                    label=f"{config_name}:{isl}x{osl}",
+                    arithmetic_intensity=ai,
+                    measured_flops_per_sec=measured_flops,
+                )
+            )
+            all_ceiling_checks.append(
+                (
+                    f"{config_name}:{isl}x{osl}",
+                    avg_tps,
+                    min(ceilings.compute_ceiling, ceilings.bandwidth_ceiling),
+                    ceilings.bottleneck,
+                )
+            )
 
-    if not all_ceilings:
-        click.echo("No throughput data found in results.")
+    if not points:
+        click.echo("No roofline-eligible data points found.")
         return
 
+    tier_bandwidths = {t.name: t.bandwidth_gbps for t in hw_config.tiers}
+    primary_precision = next(iter(sorted(all_precisions))) if all_precisions else "fp16"
+    peak_flops = float(
+        hw_config.metadata.get(
+            f"peak_flops_{primary_precision}",
+            hw_config.metadata.get("peak_flops", 0.0),
+        )
+    )
+
     plot_roofline(
-        ceilings=all_ceilings,
-        labels=all_labels,
-        measured_tokens_per_sec=all_measured,
-        title=f"Memory Roofline - {hw_config.name}",
+        points=points,
+        tier_bandwidths_gbps=tier_bandwidths,
+        peak_flops=peak_flops,
+        title=f"Roofline ({primary_precision.upper()}) - {hw_config.name}",
         output=output,
     )
     if output:
         click.echo(f"Plot saved to {output}")
     else:
         click.echo("Plot displayed.")
+
+    violations = [
+        (name, measured, ceiling, bottleneck)
+        for name, measured, ceiling, bottleneck in all_ceiling_checks
+        if measured > ceiling
+    ]
+    if violations:
+        click.echo(
+            f"[warn] {len(violations)} points exceed modeled token/s ceilings; "
+            "model likely still undercounting bytes for those configs."
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, fields
 
+from memos.types import InferenceConfig
+
 _GATED_FFN = frozenset(
     {
         "llama",
@@ -213,7 +215,12 @@ class ModelProfile:
 
         return total * dt
 
-    def flops_per_token(self, seq: int, batch: int = 1) -> float:
+    def flops_per_token(
+        self,
+        seq: int,
+        batch: int = 1,
+        inference_config: InferenceConfig | None = None,
+    ) -> float:
         """Decode FLOPs for generating 1 token with `seq` cached tokens."""
         h = self.hidden_size
         d = self.head_dim
@@ -283,12 +290,20 @@ class ModelProfile:
         # LM head
         total += 2 * h * self.vocab_size
 
-        return total
+        tp = max((inference_config.tp if inference_config else 1), 1)
+        return total / tp
 
-    def bytes_per_token(self, seq: int, batch: int = 1) -> float:
+    def bytes_per_token(
+        self,
+        seq: int,
+        batch: int = 1,
+        inference_config: InferenceConfig | None = None,
+    ) -> float:
         """Memory traffic per decode token (weight reads + KV cache reads)."""
-        w = self._active_weight_bytes() / batch
-        kv = self._kv_read_bytes(seq)
+        cfg_batch = max((inference_config.batch_size if inference_config else batch), 1)
+        tp = max((inference_config.tp if inference_config else 1), 1)
+        w = self._effective_active_weight_bytes(inference_config) / (cfg_batch * tp)
+        kv = self._kv_read_bytes(seq, inference_config=inference_config) / tp
         return w + kv
 
     def kv_cache_bytes(self, seq: int, batch: int = 1) -> int:
@@ -339,9 +354,31 @@ class ModelProfile:
             total -= self.n_moe * inactive * per_expert
         return total
 
-    def _kv_read_bytes(self, seq: int) -> float:
+    def _effective_active_weight_bytes(
+        self, inference_config: InferenceConfig | None
+    ) -> float:
+        total = float(self._active_weight_bytes())
+        if not inference_config:
+            return total
+
+        # Adjust for effective storage precision (e.g. INT8/FP8/INT4 weights).
+        base_dt = float(self.dtype_bytes)
+        effective_dt = max(float(inference_config.weight_dtype_bytes), 1e-9)
+        total *= effective_dt / base_dt
+
+        # Group-quantized weights carry scale metadata overhead.
+        group_size = max(int(inference_config.weight_group_size), 0)
+        if group_size > 0:
+            total *= 1.0 + (4.0 / (group_size * effective_dt))
+        return total
+
+    def _kv_read_bytes(
+        self, seq: int, inference_config: InferenceConfig | None = None
+    ) -> float:
         """Bytes read from KV cache per decode step."""
-        kv_dt = self._kv_dt
+        kv_dt = float(
+            inference_config.kv_dtype_bytes if inference_config else self._kv_dt
+        )
         d = self.head_dim
         nkv = self.num_kv_heads
         total = 0.0
