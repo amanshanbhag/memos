@@ -94,6 +94,19 @@ def assemble(
             sendrecv_bw, 1
         )
 
+    # Inject per-GPU dense tensor-core peak FLOPS from the platform config so the
+    # roofline compute ceiling has spec data (calibration measures bandwidth, not
+    # FLOPS). Written as flat metadata keys (peak_flops_fp16, ...) that the
+    # roofline reads, plus a generic `peak_flops` default (fp16).
+    if platform.peak_flops:
+        for precision, value in platform.peak_flops.items():
+            doc["metadata"][f"peak_flops_{precision}"] = value
+        default_flops = platform.peak_flops.get("fp16") or platform.peak_flops.get(
+            "bf16"
+        )
+        if default_flops:
+            doc["metadata"]["peak_flops"] = default_flops
+
     yaml_str = yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
     if output:

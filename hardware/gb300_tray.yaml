@@ -48,6 +48,12 @@ metadata:
   lpddr5x_node1_mb: 485698
   nvme_config: "3x 7TB RAID0 + 1x 7TB OS"
   tdp_watts: 1400
-  peak_flops: 9.0e15            # default used by roofline (FP16)
-  peak_flops_fp16: 9.0e15       # 4 x 2,250 TFLOPS FP16 per B300
-  peak_flops_fp8: 18.0e15       # 4 x 4,500 TFLOPS FP8 per B300  
+  # Per-GPU DENSE tensor-core peak (no sparsity). B300 (Blackwell Ultra).
+  # Anchor: NVIDIA GB300 NVL72 = 1.1 EF dense FP4 / 72 GPUs = ~15 PF/GPU dense FP4
+  # (developer.nvidia.com "Inside NVIDIA Blackwell Ultra"). FP8/FP16 via 4:2:1 ratio.
+  peak_flops: 3.75e15          # generic default = FP16 dense, per GPU
+  peak_flops_fp16: 3.75e15     # 3,750 TFLOPS FP16/BF16 dense per B300
+  peak_flops_bf16: 3.75e15
+  peak_flops_fp8: 7.5e15       # 7,500 TFLOPS FP8 dense per B300
+  peak_flops_fp4: 15.0e15      # 15,000 TFLOPS NVFP4 dense per B300 (NVIDIA GB300 NVL72)
+  peak_flops_int8: 7.5e15      # 7,500 TOPS INT8 dense per B300  
