@@ -31,6 +31,8 @@ class ThroughputCollector(MetricCollector):
             ctx["output_tokens"] = kwargs["output_tokens"]
         if "actual_isl" in kwargs:
             ctx["actual_isl"] = kwargs["actual_isl"]
+        if "batch" in kwargs:
+            ctx["batch"] = kwargs["batch"]
 
         if duration_ms > 0 and tokens_generated > 0:
             tps = tokens_generated / (duration_ms / 1000)
@@ -51,6 +53,17 @@ class ThroughputCollector(MetricCollector):
                     name="kv_cache_usage", value=kv_usage, unit="ratio", context=ctx
                 )
             )
+
+        # Spill/pressure signals for the multi-tier roofline experiments.
+        for name, unit in (
+            ("num_preemptions", "count"),
+            ("cpu_cache_usage", "ratio"),
+        ):
+            val = kwargs.get(name, None)
+            if val is not None:
+                self._samples.append(
+                    MetricSample(name=name, value=val, unit=unit, context=ctx)
+                )
 
     def summarize(self) -> list[MetricSample]:
         return self._samples

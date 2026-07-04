@@ -20,11 +20,19 @@ class ContextSweep(Workload):
         osls: list[int] | None = None,
         repeats: int = 3,
         cache_mode: str = "cold",
+        batch: int = 1,
+        batch_mode: str = "static",
     ) -> None:
         self._isls = isls or DEFAULT_ISLS
         self._osls = osls or DEFAULT_OSLS
         self._repeats = repeats
         self._cache_mode = cache_mode
+        self._batch = max(int(batch), 1)
+        if batch_mode not in ("static", "concurrency"):
+            raise ValueError(
+                f"batch_mode must be 'static' or 'concurrency', got {batch_mode!r}"
+            )
+        self._batch_mode = batch_mode
 
     def name(self) -> str:
         return "context_sweep"
@@ -32,6 +40,7 @@ class ContextSweep(Workload):
     def description(self) -> str:
         return (
             f"ISL x OSL sweep: ISL={self._isls}, OSL={self._osls}, "
+            f"batch={self._batch} ({self._batch_mode}), "
             f"{self._repeats} repeats each"
         )
 
@@ -46,36 +55,70 @@ class ContextSweep(Workload):
         combos = [(isl, osl) for isl in self._isls for osl in self._osls]
 
         tokenizer = runner.tokenizer
+        batch = self._batch
+        warmup_iters = 2 if batch > 1 else 5
 
         for isl, osl in combos:
             params = GenerateParams(max_tokens=osl)
-            for _ in range(5):
-                prompt = _make_exact_prompt(isl, tokenizer, unique=True)
-                runner.generate([prompt], params)
+            for _ in range(warmup_iters):
+                prompts = self._make_batch(isl, tokenizer, unique=True)
+                runner.generate(prompts, params)
 
         for isl, osl in combos:
             params = GenerateParams(max_tokens=osl)
+            unique = self._cache_mode == "cold"
+
+            if self._batch_mode == "concurrency":
+                # Sustained load: one warmup wave (dropped) then measured waves,
+                # aggregated into a single steady-state throughput sample.
+                runner.generate(self._make_batch(isl, tokenizer, unique), params)
+                total_tokens = 0.0
+                total_wall_ms = 0.0
+                actual_isl = isl
+                extra: dict = {}
+                for wave in range(self._repeats):
+                    prompts = self._make_batch(isl, tokenizer, unique)
+                    results = runner.generate(prompts, params)
+                    total_tokens += sum(r.generated_tokens for r in results)
+                    total_wall_ms += _wall_ms(results)
+                    actual_isl = results[0].prompt_tokens
+                    extra = results[0].extra
+                request_id = f"isl{isl}_osl{osl}_b{batch}_sustained"
+                for c in collectors:
+                    c.on_generate_start(request_id, actual_isl)
+                    c.on_generate_end(
+                        request_id,
+                        total_tokens,
+                        total_wall_ms,
+                        output_tokens=osl,
+                        actual_isl=actual_isl,
+                        batch=batch,
+                        **extra,
+                    )
+                continue
+
+            # Static batch: exactly `batch` requests per generate call, per repeat.
             for repeat in range(self._repeats):
-                request_id = f"isl{isl}_osl{osl}_r{repeat}"
-                unique = self._cache_mode == "cold"
-                prompt = _make_exact_prompt(isl, tokenizer, unique=unique)
-
-                actual_isl = len(prompt) if isinstance(prompt, list) else isl
+                request_id = f"isl{isl}_osl{osl}_b{batch}_r{repeat}"
+                prompts = self._make_batch(isl, tokenizer, unique)
+                actual_isl = len(prompts[0]) if isinstance(prompts[0], list) else isl
 
                 for c in collectors:
                     c.on_generate_start(request_id, actual_isl)
 
-                results = runner.generate([prompt], params)
-                result = results[0]
+                results = runner.generate(prompts, params)
+                total_tokens = sum(r.generated_tokens for r in results)
+                wall_ms = _wall_ms(results)
 
                 for c in collectors:
                     c.on_generate_end(
                         request_id,
-                        result.generated_tokens,
-                        result.duration_ms,
+                        total_tokens,
+                        wall_ms,
                         output_tokens=osl,
-                        actual_isl=result.prompt_tokens,
-                        **result.extra,
+                        actual_isl=results[0].prompt_tokens,
+                        batch=batch,
+                        **results[0].extra,
                     )
 
         for c in collectors:
@@ -90,9 +133,32 @@ class ContextSweep(Workload):
                 "osls": self._osls,
                 "repeats": self._repeats,
                 "cache_mode": self._cache_mode,
+                "batch": self._batch,
+                "batch_mode": self._batch_mode,
             },
             metrics=all_metrics,
         )
+
+    def _make_batch(self, isl: int, tokenizer, unique: bool) -> list[Prompt]:
+        """Build `batch` prompts of exactly `isl` tokens.
+
+        Each prompt is independently randomized so cold-cache runs don't share
+        prefixes across the batch (which would let prefix caching interfere).
+        """
+        return [
+            _make_exact_prompt(isl, tokenizer, unique=unique)
+            for _ in range(self._batch)
+        ]
+
+
+def _wall_ms(results) -> float:
+    """Reconstruct wall-clock time for a batched generate call.
+
+    VLLMRunner reports per-result duration_ms = wall_ms / batch_size, so summing
+    across the batch recovers the true wall-clock elapsed time. Aggregate
+    throughput is then total_generated_tokens / wall_seconds.
+    """
+    return sum(r.duration_ms for r in results)
 
 
 def _make_exact_prompt(target_tokens: int, tokenizer, unique: bool = True) -> list[int]:

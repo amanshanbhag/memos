@@ -115,6 +115,20 @@ class VLLMRunner(Runner):
                         "prefix_cache_queries": metrics.get(
                             "vllm:prefix_cache_queries", 0.0
                         ),
+                        # Pressure/spill signals: num_preemptions rises when KV
+                        # overflows HBM (vLLM preempts+recomputes or swaps); cpu
+                        # cache usage rises when KV spills to host DRAM.
+                        "num_preemptions": metrics.get(
+                            "vllm:num_preemptions_total",
+                            metrics.get("vllm:num_preemptions", 0.0),
+                        ),
+                        "gpu_cache_usage": metrics.get(
+                            "vllm:gpu_cache_usage_perc",
+                            metrics.get("vllm:kv_cache_usage_perc", 0.0),
+                        ),
+                        "cpu_cache_usage": metrics.get(
+                            "vllm:cpu_cache_usage_perc", 0.0
+                        ),
                     },
                 )
             )

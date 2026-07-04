@@ -33,6 +33,8 @@ metadata:
 {% if tp %}            --tp {{ tp }} \
 {% endif %}{% if input_tokens %}            --input-tokens "{{ input_tokens }}" \
 {% endif %}{% if repeats %}            --repeats {{ repeats }} \
+{% endif %}{% if batch and batch > 1 %}            --batch {{ batch }} \
+{% endif %}{% if batch_mode and batch_mode != 'static' %}            --batch-mode {{ batch_mode }} \
 {% endif %}{% if cache_mode %}            --cache-mode {{ cache_mode }} \
 {% endif %}{% if output_tokens %}            --output-tokens {{ output_tokens }} \
 {% endif %}{% for ea in engine_args %}            --engine-arg {{ ea }} \

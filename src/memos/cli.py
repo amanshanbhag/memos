@@ -88,6 +88,18 @@ def main() -> None:
 )
 @click.option("--repeats", default=3, type=int, help="Repeats per context length")
 @click.option(
+    "--batch",
+    default=1,
+    type=int,
+    help="Batch size (concurrent requests per generate call)",
+)
+@click.option(
+    "--batch-mode",
+    default="static",
+    type=click.Choice(["static", "concurrency"]),
+    help="static: B requests per repeat; concurrency: sustained waves of B",
+)
+@click.option(
     "--output-tokens",
     "--osl",
     default="128",
@@ -149,6 +161,8 @@ def run(
     cache_mode: str,
     input_tokens: str | None,
     repeats: int,
+    batch: int,
+    batch_mode: str,
     output_tokens: str,
     engine_arg: tuple[str, ...],
     scheduler: str | None,
@@ -183,6 +197,8 @@ def run(
             tp=tp,
             input_tokens=input_tokens,
             repeats=repeats,
+            batch=batch,
+            batch_mode=batch_mode,
             cache_mode=cache_mode,
             output_tokens=output_tokens,
             engine_args=list(engine_arg),
@@ -283,6 +299,8 @@ def run(
         osls=osls,
         repeats=repeats,
         cache_mode=cache_mode,
+        batch=batch,
+        batch_mode=batch_mode,
     )
     click.echo(f"Running: {workload.description()}")
     click.echo()
@@ -296,7 +314,7 @@ def run(
         tp=tp if tp is not None else hw_config.gpu_count,
         pp=pp if pp is not None else 1,
         dp=dp if dp is not None else 1,
-        batch_size=1,
+        batch_size=batch,
         cache_mode=cache_mode,
         weight_dtype_bytes=_infer_weight_dtype_bytes(parsed_engine_args),
         kv_dtype_bytes=_infer_kv_dtype_bytes(parsed_engine_args),
@@ -436,6 +454,7 @@ def roofline(results_path: str, hw: str, output: str | None) -> None:
                     label=f"{config_name}:{isl}x{osl}",
                     arithmetic_intensity=ai,
                     measured_flops_per_sec=measured_flops,
+                    series=config_name,
                 )
             )
             all_ceiling_checks.append(

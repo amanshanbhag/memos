@@ -471,7 +471,14 @@ def measure_hbm_cuda(device: int = 0) -> BandwidthResult:
     _check_cuda(rt.cudaMalloc(ctypes.byref(src), _BW_BUF_BYTES))
     _check_cuda(rt.cudaMalloc(ctypes.byref(dst), _BW_BUF_BYTES))
     try:
-        bw = _measure_memcpy_bw(rt, dst, src, _BW_BUF_BYTES, 3)
+        # A device-to-device cudaMemcpy of N bytes touches HBM twice: it READS N
+        # bytes from src and WRITES N bytes to dst (both in the same HBM). The
+        # helper reports logical bytes moved (N) / time, so it undercounts true
+        # HBM bandwidth by ~2x. The roofline needs achieved HBM traffic rate, so
+        # we double it. (On GB300 this turns ~3.4 TB/s copy-bw into ~6.7 TB/s,
+        # ~84% of the ~8 TB/s spec.) Only D2D intra-HBM gets this factor; H2D /
+        # peer copies move bytes across a link once and are not doubled.
+        bw = 2.0 * _measure_memcpy_bw(rt, dst, src, _BW_BUF_BYTES, 3)
         lat = _measure_memcpy_latency(rt, dst, src, 3)
     finally:
         rt.cudaFree(src)

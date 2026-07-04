@@ -437,12 +437,27 @@ def from_pretrained(
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     model_type = getattr(config, "model_type", "")
 
-    num_layers = getattr(config, "num_hidden_layers", getattr(config, "n_layer", 0))
-    hidden_size = getattr(config, "hidden_size", getattr(config, "d_model", 0))
-    vocab_size = getattr(config, "vocab_size", 0)
-    num_heads = getattr(config, "num_attention_heads", getattr(config, "n_head", 0))
-    num_kv_heads = getattr(config, "num_key_value_heads", num_heads)
-    head_dim = getattr(config, "head_dim", hidden_size // num_heads if num_heads else 0)
+    def _cfg(name: str, default, *aliases: str):
+        """getattr that treats an explicitly-null config value as missing.
+
+        HF configs frequently set optional numeric keys to `null` (e.g.
+        DeepSeek-V2-Lite `q_lora_rank`, some models `head_dim`). Plain
+        getattr(config, key, default) returns None in that case (the key
+        exists), which then blows up in arithmetic. This falls through to the
+        next alias / default whenever a value is missing OR None.
+        """
+        for key in (name, *aliases):
+            val = getattr(config, key, None)
+            if val is not None:
+                return val
+        return default
+
+    num_layers = _cfg("num_hidden_layers", 0, "n_layer")
+    hidden_size = _cfg("hidden_size", 0, "d_model")
+    vocab_size = _cfg("vocab_size", 0)
+    num_heads = _cfg("num_attention_heads", 0, "n_head")
+    num_kv_heads = _cfg("num_key_value_heads", num_heads)
+    head_dim = _cfg("head_dim", hidden_size // num_heads if num_heads else 0)
     tie = getattr(config, "tie_word_embeddings", True)
 
     # FFN type
@@ -471,27 +486,21 @@ def from_pretrained(
                 file=sys.stderr,
             )
 
-    intermediate_size = getattr(config, "intermediate_size", 4 * hidden_size)
+    intermediate_size = _cfg("intermediate_size", 4 * hidden_size)
 
     # MoE detection
-    n_experts = getattr(
-        config,
-        "num_local_experts",
-        getattr(config, "n_routed_experts", getattr(config, "num_experts", 1)),
-    )
-    top_k = getattr(
-        config, "num_experts_per_tok", getattr(config, "num_experts_per_topk", 1)
-    )
-    expert_inter = getattr(config, "moe_intermediate_size", 0)
-    n_shared = getattr(config, "n_shared_experts", 0)
-    shared_inter = getattr(config, "shared_expert_intermediate_size", 0)
+    n_experts = _cfg("num_local_experts", 1, "n_routed_experts", "num_experts")
+    top_k = _cfg("num_experts_per_tok", 1, "num_experts_per_topk")
+    expert_inter = _cfg("moe_intermediate_size", 0)
+    n_shared = _cfg("n_shared_experts", 0)
+    shared_inter = _cfg("shared_expert_intermediate_size", 0)
 
     # MLA detection
-    kv_lora_rank = getattr(config, "kv_lora_rank", 0)
-    q_lora_rank = getattr(config, "q_lora_rank", 0)
-    qk_rope = getattr(config, "qk_rope_head_dim", 0)
-    qk_nope = getattr(config, "qk_nope_head_dim", 0)
-    v_head_dim = getattr(config, "v_head_dim", 0)
+    kv_lora_rank = _cfg("kv_lora_rank", 0)
+    q_lora_rank = _cfg("q_lora_rank", 0)
+    qk_rope = _cfg("qk_rope_head_dim", 0)
+    qk_nope = _cfg("qk_nope_head_dim", 0)
+    v_head_dim = _cfg("v_head_dim", 0)
 
     # SSM detection
     ssm_state = 0
@@ -500,17 +509,17 @@ def from_pretrained(
     ssm_has_ffn = False
 
     if model_type in _PURE_SSM:
-        ssm_state = getattr(config, "state_size", 16)
-        ssm_expand = getattr(config, "expand", 2)
-        ssm_conv = getattr(config, "conv_kernel", 4)
+        ssm_state = _cfg("state_size", 16)
+        ssm_expand = _cfg("expand", 2)
+        ssm_conv = _cfg("conv_kernel", 4)
         intermediate_size = 0  # pure Mamba has no FFN
         num_heads = 0
         num_kv_heads = 0
         head_dim = 0
     elif model_type in _HYBRID_SSM:
-        ssm_state = getattr(config, "mamba_d_state", getattr(config, "state_size", 16))
-        ssm_expand = getattr(config, "mamba_expand", getattr(config, "expand", 2))
-        ssm_conv = getattr(config, "mamba_d_conv", getattr(config, "conv_kernel", 4))
+        ssm_state = _cfg("mamba_d_state", 16, "state_size")
+        ssm_expand = _cfg("mamba_expand", 2, "expand")
+        ssm_conv = _cfg("mamba_d_conv", 4, "conv_kernel")
         ssm_has_ffn = True
 
     # Sliding window
