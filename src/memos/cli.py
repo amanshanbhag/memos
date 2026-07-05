@@ -96,8 +96,18 @@ def main() -> None:
 @click.option(
     "--batch-mode",
     default="static",
-    type=click.Choice(["static", "concurrency"]),
-    help="static: B requests per repeat; concurrency: sustained waves of B",
+    type=click.Choice(["static", "concurrency", "saturated"]),
+    help=(
+        "static: B requests per repeat; concurrency: sustained waves of B; "
+        "saturated: deep queue with running batch pinned at B (max_num_seqs=B)"
+    ),
+)
+@click.option(
+    "--max-num-seqs",
+    default=None,
+    type=int,
+    help="Pin vLLM max_num_seqs (running batch cap). Auto-set to --batch in "
+    "saturated mode if unset.",
 )
 @click.option(
     "--output-tokens",
@@ -163,6 +173,7 @@ def run(
     repeats: int,
     batch: int,
     batch_mode: str,
+    max_num_seqs: int | None,
     output_tokens: str,
     engine_arg: tuple[str, ...],
     scheduler: str | None,
@@ -182,6 +193,11 @@ def run(
     """Run a benchmark workload (or generate a scheduler manifest with --scheduler)."""
     hw_config = load_hardware(hw)
 
+    # Saturated mode pins the running batch by capping max_num_seqs at B.
+    effective_max_num_seqs = max_num_seqs
+    if effective_max_num_seqs is None and batch_mode == "saturated":
+        effective_max_num_seqs = batch
+
     # --- Submission mode: generate manifest and exit ---
     if scheduler:
         from memos.calibrate.manifest import render_run_manifest
@@ -199,6 +215,7 @@ def run(
             repeats=repeats,
             batch=batch,
             batch_mode=batch_mode,
+            max_num_seqs=effective_max_num_seqs,
             cache_mode=cache_mode,
             output_tokens=output_tokens,
             engine_args=list(engine_arg),
@@ -278,6 +295,8 @@ def run(
         runner_kwargs["pipeline_parallel_size"] = pp
     if dp is not None:
         runner_kwargs["data_parallel_size"] = dp
+    if effective_max_num_seqs is not None:
+        runner_kwargs["max_num_seqs"] = effective_max_num_seqs
     runner_kwargs["enable_prefix_caching"] = cache_mode == "warm"
 
     parsed_engine_args: dict[str, object] = {}
@@ -315,6 +334,7 @@ def run(
         pp=pp if pp is not None else 1,
         dp=dp if dp is not None else 1,
         batch_size=batch,
+        max_num_seqs=effective_max_num_seqs or 0,
         cache_mode=cache_mode,
         weight_dtype_bytes=_infer_weight_dtype_bytes(parsed_engine_args),
         kv_dtype_bytes=_infer_kv_dtype_bytes(parsed_engine_args),
@@ -401,6 +421,8 @@ def roofline(results_path: str, hw: str, output: str | None) -> None:
         all_precisions.add(precision)
         config_name = rf.parent.name
 
+        import dataclasses
+
         tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
         by_combo: dict[tuple[int, int], list[float]] = {}
         for sample in tps_samples:
@@ -408,34 +430,51 @@ def roofline(results_path: str, hw: str, output: str | None) -> None:
             osl = int(sample.context.get("output_tokens", 0))
             by_combo.setdefault((isl, osl), []).append(sample.value)
 
+        # Measured average running batch (sampled in-flight) -> the point's true
+        # position on the AI axis. Falls back to the nominal submitted batch.
+        rb_by_combo: dict[tuple[int, int], list[float]] = {}
+        for sample in (m for m in result.metrics if m.name == "running_batch_avg"):
+            isl = int(sample.context.get("context_length", 0))
+            osl = int(sample.context.get("output_tokens", 0))
+            rb_by_combo.setdefault((isl, osl), []).append(sample.value)
+
         for (isl, osl), vals in sorted(by_combo.items()):
             if not vals or isl <= 0:
                 continue
             avg_tps = sum(vals) / len(vals)
 
+            rb_vals = [v for v in rb_by_combo.get((isl, osl), []) if v > 0]
+            if rb_vals:
+                measured_batch = max(1, round(sum(rb_vals) / len(rb_vals)))
+                eff_inference = dataclasses.replace(
+                    inference, batch_size=measured_batch
+                )
+            else:
+                eff_inference = inference
+
             flops_per_token = profile.flops_per_token(
-                seq=isl, inference_config=inference
+                seq=isl, inference_config=eff_inference
             )
             bytes_per_token = profile.bytes_per_token(
-                seq=isl, inference_config=inference
+                seq=isl, inference_config=eff_inference
             )
             if bytes_per_token <= 0 or flops_per_token <= 0:
                 continue
 
             weight_bytes = profile.weight_bytes()
             weight_scaled = weight_bytes * (
-                inference.weight_dtype_bytes / max(float(profile.dtype_bytes), 1e-9)
+                eff_inference.weight_dtype_bytes / max(float(profile.dtype_bytes), 1e-9)
             )
-            if inference.weight_group_size > 0:
+            if eff_inference.weight_group_size > 0:
                 weight_scaled *= 1.0 + (
                     4.0
                     / (
-                        inference.weight_group_size
-                        * max(float(inference.weight_dtype_bytes), 1e-9)
+                        eff_inference.weight_group_size
+                        * max(float(eff_inference.weight_dtype_bytes), 1e-9)
                     )
                 )
-            tp = max(inference.tp, 1)
-            batch = max(inference.batch_size, 1)
+            tp = max(eff_inference.tp, 1)
+            batch = max(eff_inference.batch_size, 1)
             working_set = (weight_scaled / tp) + (
                 profile.kv_cache_bytes(seq=isl, batch=batch) / tp
             )

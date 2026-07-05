@@ -54,10 +54,15 @@ class ThroughputCollector(MetricCollector):
                 )
             )
 
-        # Spill/pressure signals for the multi-tier roofline experiments.
+        # Spill/pressure signals for the multi-tier roofline experiments, plus
+        # the measured running batch (sampled in-flight by the runner) used to
+        # position points on the roofline at the ACTUAL running batch.
         for name, unit in (
             ("num_preemptions", "count"),
             ("cpu_cache_usage", "ratio"),
+            ("gpu_cache_usage", "ratio"),
+            ("running_batch_avg", "requests"),
+            ("running_batch_peak", "requests"),
         ):
             val = kwargs.get(name, None)
             if val is not None:

@@ -22,17 +22,20 @@ class ContextSweep(Workload):
         cache_mode: str = "cold",
         batch: int = 1,
         batch_mode: str = "static",
+        queue_depth: int = 4,
     ) -> None:
         self._isls = isls or DEFAULT_ISLS
         self._osls = osls or DEFAULT_OSLS
         self._repeats = repeats
         self._cache_mode = cache_mode
         self._batch = max(int(batch), 1)
-        if batch_mode not in ("static", "concurrency"):
+        if batch_mode not in ("static", "concurrency", "saturated"):
             raise ValueError(
-                f"batch_mode must be 'static' or 'concurrency', got {batch_mode!r}"
+                "batch_mode must be 'static', 'concurrency', or 'saturated', "
+                f"got {batch_mode!r}"
             )
         self._batch_mode = batch_mode
+        self._queue_depth = max(int(queue_depth), 1)
 
     def name(self) -> str:
         return "context_sweep"
@@ -67,6 +70,39 @@ class ContextSweep(Workload):
         for isl, osl in combos:
             params = GenerateParams(max_tokens=osl)
             unique = self._cache_mode == "cold"
+
+            if self._batch_mode == "saturated":
+                # Deep queue (batch * queue_depth prompts) submitted at once so
+                # the scheduler keeps `batch` sequences running (pin running
+                # batch via max_num_seqs=batch at engine setup). One warmup wave
+                # dropped; the sampler records the ACTUAL running batch for the
+                # roofline. Throughput is the sustained aggregate over repeats.
+                n = max(batch * self._queue_depth, batch)
+                runner.generate(self._make_batch(isl, tokenizer, unique, batch), params)
+                total_tokens = 0.0
+                total_wall_ms = 0.0
+                actual_isl = isl
+                extra = {}
+                for _ in range(self._repeats):
+                    prompts = self._make_batch(isl, tokenizer, unique, n)
+                    results = runner.generate(prompts, params)
+                    total_tokens += sum(r.generated_tokens for r in results)
+                    total_wall_ms += _wall_ms(results)
+                    actual_isl = results[0].prompt_tokens
+                    extra = results[0].extra
+                request_id = f"isl{isl}_osl{osl}_b{batch}_saturated"
+                for c in collectors:
+                    c.on_generate_start(request_id, actual_isl)
+                    c.on_generate_end(
+                        request_id,
+                        total_tokens,
+                        total_wall_ms,
+                        output_tokens=osl,
+                        actual_isl=actual_isl,
+                        batch=batch,
+                        **extra,
+                    )
+                continue
 
             if self._batch_mode == "concurrency":
                 # Sustained load: one warmup wave (dropped) then measured waves,
@@ -139,16 +175,16 @@ class ContextSweep(Workload):
             metrics=all_metrics,
         )
 
-    def _make_batch(self, isl: int, tokenizer, unique: bool) -> list[Prompt]:
-        """Build `batch` prompts of exactly `isl` tokens.
+    def _make_batch(
+        self, isl: int, tokenizer, unique: bool, count: int | None = None
+    ) -> list[Prompt]:
+        """Build `count` (default `batch`) prompts of exactly `isl` tokens.
 
         Each prompt is independently randomized so cold-cache runs don't share
         prefixes across the batch (which would let prefix caching interfere).
         """
-        return [
-            _make_exact_prompt(isl, tokenizer, unique=unique)
-            for _ in range(self._batch)
-        ]
+        n = self._batch if count is None else max(int(count), 1)
+        return [_make_exact_prompt(isl, tokenizer, unique=unique) for _ in range(n)]
 
 
 def _wall_ms(results) -> float:

@@ -49,6 +49,7 @@ class InferenceConfig:
     pp: int = 1
     dp: int = 1
     batch_size: int = 1
+    max_num_seqs: int = 0  # 0 = engine default; pins running batch in saturated mode
     cache_mode: str = "cold"
     weight_dtype_bytes: float = 2.0
     kv_dtype_bytes: float = 2.0

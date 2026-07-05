@@ -26,6 +26,7 @@ srun $CONTAINER_ARGS bash -c "
 {% endif %}{% if repeats %}    --repeats {{ repeats }} \
 {% endif %}{% if batch and batch > 1 %}    --batch {{ batch }} \
 {% endif %}{% if batch_mode and batch_mode != 'static' %}    --batch-mode {{ batch_mode }} \
+{% endif %}{% if max_num_seqs %}    --max-num-seqs {{ max_num_seqs }} \
 {% endif %}{% if cache_mode %}    --cache-mode {{ cache_mode }} \
 {% endif %}{% if output_tokens %}    --output-tokens {{ output_tokens }} \
 {% endif %}{% for ea in engine_args %}    --engine-arg {{ ea }} \
