@@ -386,6 +386,8 @@ def run(
 @click.option("--output", default=None, type=click.Path(), help="Save plot to file")
 def roofline(results_path: str, hw: str, output: str | None) -> None:
     """Generate a classic roofline plot from benchmark results."""
+    import dataclasses
+
     from memos.model_profile import ModelProfile
     from memos.results import load_result
     from memos.roofline.model import compute_ceilings
@@ -420,8 +422,6 @@ def roofline(results_path: str, hw: str, output: str | None) -> None:
         precision = _infer_precision(inference)
         all_precisions.add(precision)
         config_name = rf.parent.name
-
-        import dataclasses
 
         tps_samples = [m for m in result.metrics if m.name == "tokens_per_sec"]
         by_combo: dict[tuple[int, int], list[float]] = {}

@@ -71,66 +71,30 @@ class ContextSweep(Workload):
             params = GenerateParams(max_tokens=osl)
             unique = self._cache_mode == "cold"
 
-            if self._batch_mode == "saturated":
-                # Deep queue (batch * queue_depth prompts) submitted at once so
-                # the scheduler keeps `batch` sequences running (pin running
-                # batch via max_num_seqs=batch at engine setup). One warmup wave
-                # dropped; the sampler records the ACTUAL running batch for the
-                # roofline. Throughput is the sustained aggregate over repeats.
-                n = max(batch * self._queue_depth, batch)
-                runner.generate(self._make_batch(isl, tokenizer, unique, batch), params)
-                total_tokens = 0.0
-                total_wall_ms = 0.0
-                actual_isl = isl
-                extra = {}
-                for _ in range(self._repeats):
-                    prompts = self._make_batch(isl, tokenizer, unique, n)
-                    results = runner.generate(prompts, params)
-                    total_tokens += sum(r.generated_tokens for r in results)
-                    total_wall_ms += _wall_ms(results)
-                    actual_isl = results[0].prompt_tokens
-                    extra = results[0].extra
-                request_id = f"isl{isl}_osl{osl}_b{batch}_saturated"
-                for c in collectors:
-                    c.on_generate_start(request_id, actual_isl)
-                    c.on_generate_end(
-                        request_id,
-                        total_tokens,
-                        total_wall_ms,
-                        output_tokens=osl,
-                        actual_isl=actual_isl,
-                        batch=batch,
-                        **extra,
-                    )
-                continue
-
-            if self._batch_mode == "concurrency":
-                # Sustained load: one warmup wave (dropped) then measured waves,
-                # aggregated into a single steady-state throughput sample.
-                runner.generate(self._make_batch(isl, tokenizer, unique), params)
-                total_tokens = 0.0
-                total_wall_ms = 0.0
-                actual_isl = isl
-                extra: dict = {}
-                for wave in range(self._repeats):
-                    prompts = self._make_batch(isl, tokenizer, unique)
-                    results = runner.generate(prompts, params)
-                    total_tokens += sum(r.generated_tokens for r in results)
-                    total_wall_ms += _wall_ms(results)
-                    actual_isl = results[0].prompt_tokens
-                    extra = results[0].extra
-                request_id = f"isl{isl}_osl{osl}_b{batch}_sustained"
-                for c in collectors:
-                    c.on_generate_start(request_id, actual_isl)
-                    c.on_generate_end(
-                        request_id,
-                        total_tokens,
-                        total_wall_ms,
-                        output_tokens=osl,
-                        actual_isl=actual_isl,
-                        batch=batch,
-                        **extra,
-                    )
+            # Sustained-load modes share one measurement path (warmup wave +
+            # aggregated repeats); they differ only in prompts-per-wave.
+            if self._batch_mode in ("saturated", "concurrency"):
+                if self._batch_mode == "saturated":
+                    # Deep queue so the scheduler keeps `batch` sequences running
+                    # (running batch pinned via max_num_seqs=batch at setup).
+                    prompts_per_wave = max(batch * self._queue_depth, batch)
+                    suffix = "saturated"
+                else:
+                    # Request-level: sustained waves of exactly `batch`.
+                    prompts_per_wave = batch
+                    suffix = "sustained"
+                self._run_sustained(
+                    runner,
+                    collectors,
+                    tokenizer,
+                    isl,
+                    osl,
+                    params,
+                    unique,
+                    prompts_per_wave,
+                    batch,
+                    suffix,
+                )
                 continue
 
             # Static batch: exactly `batch` requests per generate call, per repeat.
@@ -174,6 +138,54 @@ class ContextSweep(Workload):
             },
             metrics=all_metrics,
         )
+
+    def _run_sustained(
+        self,
+        runner: Runner,
+        collectors: list[MetricCollector],
+        tokenizer,
+        isl: int,
+        osl: int,
+        params: GenerateParams,
+        unique: bool,
+        prompts_per_wave: int,
+        batch: int,
+        suffix: str,
+    ) -> None:
+        """One dropped warmup wave, then `repeats` measured waves aggregated into
+        a single steady-state throughput sample.
+
+        Shared by `concurrency` (waves of `batch`) and `saturated` (deep queue of
+        `batch * queue_depth`, running batch pinned at `batch`). The in-flight
+        sampler in the runner records the actual running batch for the roofline.
+        """
+        runner.generate(
+            self._make_batch(isl, tokenizer, unique, prompts_per_wave), params
+        )
+        total_tokens = 0.0
+        total_wall_ms = 0.0
+        actual_isl = isl
+        extra: dict = {}
+        for _ in range(self._repeats):
+            prompts = self._make_batch(isl, tokenizer, unique, prompts_per_wave)
+            results = runner.generate(prompts, params)
+            total_tokens += sum(r.generated_tokens for r in results)
+            total_wall_ms += _wall_ms(results)
+            actual_isl = results[0].prompt_tokens
+            extra = results[0].extra
+
+        request_id = f"isl{isl}_osl{osl}_b{batch}_{suffix}"
+        for c in collectors:
+            c.on_generate_start(request_id, actual_isl)
+            c.on_generate_end(
+                request_id,
+                total_tokens,
+                total_wall_ms,
+                output_tokens=osl,
+                actual_isl=actual_isl,
+                batch=batch,
+                **extra,
+            )
 
     def _make_batch(
         self, isl: int, tokenizer, unique: bool, count: int | None = None
