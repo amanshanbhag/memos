@@ -391,6 +391,13 @@ def run(
 @click.option("--osl", default=128, type=int, help="Random dataset output length")
 @click.option("--num-prompts", default=500, type=int, help="Requests per grid point")
 @click.option(
+    "--warmup-prompts",
+    default=64,
+    type=int,
+    help="Discarded warmup requests before the grid (0 disables) to absorb "
+    "one-time compile/graph-capture stalls",
+)
+@click.option(
     "--request-rate",
     default="inf",
     help="Offered QPS per point, comma-separated ('inf' = unthrottled, e.g. 4,8,16,inf)",
@@ -440,6 +447,7 @@ def bench_serve(
     isl: int,
     osl: int,
     num_prompts: int,
+    warmup_prompts: int,
     request_rate: str,
     max_concurrency: str | None,
     dataset: str,
@@ -490,6 +498,7 @@ def bench_serve(
             isl=isl,
             osl=osl,
             num_prompts=num_prompts,
+            warmup_prompts=warmup_prompts,
             request_rate=request_rate,
             max_concurrency=max_concurrency,
             dataset=dataset,
@@ -557,6 +566,7 @@ def bench_serve(
         percentiles=percentiles,
         server_log=server_log,
         env=env_map or None,
+        warmup_prompts=warmup_prompts,
     )
 
     result.environment = dataclasses.asdict(detect_environment())

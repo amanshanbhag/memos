@@ -34,6 +34,7 @@ metadata:
 {% endif %}            --isl {{ isl }} \
             --osl {{ osl }} \
             --num-prompts {{ num_prompts }} \
+            --warmup-prompts {{ warmup_prompts }} \
             --request-rate "{{ request_rate }}" \
 {% if max_concurrency %}            --max-concurrency "{{ max_concurrency }}" \
 {% endif %}            --dataset {{ dataset }} \

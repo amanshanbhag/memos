@@ -150,6 +150,7 @@ def run_bench_serve(
     result_dir: str | None = None,
     server_log: str | None = None,
     env: dict[str, str] | None = None,
+    warmup_prompts: int = 64,
 ) -> BenchmarkResult:
     """Sweep offered load against a live vLLM server and collect SLO + pressure.
 
@@ -157,6 +158,11 @@ def run_bench_serve(
     point is (request_rate x max_concurrency) at a fixed ISL/OSL; the arrival
     process is vLLM's Poisson generator. Pressure metrics come from the server's
     /metrics sampled during the point.
+
+    A warmup pass (`warmup_prompts` requests at unthrottled rate, result
+    discarded) runs first so the initial measured point is not contaminated by
+    one-time torch.compile / CUDA-graph capture stalls (otherwise the lowest QPS
+    point shows a huge TTFT tail as the first requests trigger compilation).
     """
     engine_args = engine_args or {}
     concurrencies: list[int | None] = (
@@ -179,6 +185,23 @@ def run_bench_serve(
         env=env,
         log_path=server_log,
     ) as server:
+        # Discarded warmup: force graph capture across concurrency buckets before
+        # the measured grid so the first real point is warm.
+        if warmup_prompts > 0:
+            _run_one_bench(
+                base_url=server.base_url,
+                model=model,
+                isl=isl,
+                osl=osl,
+                num_prompts=warmup_prompts,
+                request_rate="inf",
+                max_concurrency=None,
+                dataset=dataset,
+                percentiles=percentiles,
+                result_dir=result_path,
+                tag="warmup",
+            )
+
         for rate in request_rates:
             for conc in concurrencies:
                 tag = f"isl{isl}_osl{osl}_rate{rate}_conc{conc or 0}"
