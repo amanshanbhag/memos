@@ -71,6 +71,10 @@ class VLLMServer:
         return f"{self.base_url}/metrics"
 
     def _build_command(self) -> list[str]:
+        # Request logging is off by default in current vLLM (the old
+        # --disable-log-requests flag was removed; opt-in via --enable-log-requests),
+        # so we pass nothing extra. /metrics still exposes num_requests_running/
+        # waiting + cache usage regardless.
         cmd = [
             "vllm",
             "serve",
@@ -81,8 +85,6 @@ class VLLMServer:
             str(self._port),
             "--tensor-parallel-size",
             str(self._tp),
-            # V1 exposes num_requests_running/waiting + cache usage on /metrics.
-            "--disable-log-requests",
         ]
         cmd.extend(_emit_engine_args(self._engine_args))
         return cmd
