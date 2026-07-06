@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: memos-bench-serve
+{% if k8s_namespace %}  namespace: {{ k8s_namespace }}
+{% endif %}spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+{% if nodelist_items %}      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+{% for node in nodelist_items %}                - {{ node }}
+{% endfor %}{% endif %}      containers:
+      - name: memos-bench-serve
+        image: {{ image }}
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+{% for ev in env_vars %}          export {{ ev }}
+{% endfor %}          pip install -e {{ repo_dir }} --quiet
+          memos bench-serve \
+            --hw {{ hw_path }} \
+            --model {{ model }} \
+{% if tp %}            --tp {{ tp }} \
+{% endif %}            --isl {{ isl }} \
+            --osl {{ osl }} \
+            --num-prompts {{ num_prompts }} \
+            --request-rate "{{ request_rate }}" \
+{% if max_concurrency %}            --max-concurrency "{{ max_concurrency }}" \
+{% endif %}            --dataset {{ dataset }} \
+            --port {{ port }} \
+            --percentiles "{{ percentiles }}" \
+{% for ea in engine_args %}            --engine-arg {{ ea }} \
+{% endfor %}            --output {{ output_dir }}
+        resources:
+          limits:
+            nvidia.com/gpu: {{ gpus_per_node }}
+          requests:
+            nvidia.com/gpu: {{ gpus_per_node }}
+        volumeMounts:
+        - name: shmem
+          mountPath: /dev/shm
+        - name: memos-repo
+          mountPath: {{ repo_dir }}
+        - name: results
+          mountPath: {{ output_dir }}
+      volumes:
+      - name: shmem
+        hostPath:
+          path: /dev/shm
+      - name: memos-repo
+        hostPath:
+          path: {{ repo_dir }}
+      - name: results
+{% if pvc %}        persistentVolumeClaim:
+          claimName: {{ pvc }}
+{% else %}        emptyDir: {}
+{% endif %}

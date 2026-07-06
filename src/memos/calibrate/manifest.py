@@ -245,3 +245,82 @@ def render_run_manifest(
     }
 
     return template.render(**context)
+
+
+def render_bench_serve_manifest(
+    scheduler: str,
+    hw_path: str,
+    model: str,
+    gpus_per_node: int,
+    output_dir: str,
+    nodes: int = 1,
+    tp: int | None = None,
+    isl: int = 1024,
+    osl: int = 128,
+    num_prompts: int = 500,
+    request_rate: str = "inf",
+    max_concurrency: str | None = None,
+    dataset: str = "random",
+    port: int = 8000,
+    percentiles: str = "90,95,99",
+    engine_args: list[str] | None = None,
+    env_vars: list[str] | None = None,
+    slurm_args: list[str] | None = None,
+    nodelist: str | None = None,
+    time: str = "02:00:00",
+    account: str | None = None,
+    partition: str | None = None,
+    container_image: str | None = None,
+    container_mounts: str | None = None,
+    namespace: str | None = None,
+    pvc: str | None = None,
+) -> str:
+    """Render an open-loop serving benchmark manifest (server+client colocated)."""
+    env = _get_env()
+
+    if scheduler == "slurm":
+        template = env.get_template("slurm_bench_serve.sbatch.j2")
+    elif scheduler == "k8s":
+        template = env.get_template("k8s_bench_serve.yaml.j2")
+    else:
+        raise ValueError(f"Unsupported scheduler: {scheduler}. Use 'slurm' or 'k8s'.")
+
+    resolved_image = container_image or DEFAULT_CONTAINER_IMAGE
+    resolved_mounts = _resolve_container_mounts(container_mounts, output_dir)
+    repo_dir = _resolve_repo_dir(resolved_mounts)
+    c_output_dir = _host_to_container_path(output_dir, resolved_mounts).rstrip("/")
+    c_hw_path = _host_to_container_path(hw_path, resolved_mounts)
+
+    context: dict[str, Any] = {
+        "hw_path": c_hw_path,
+        "model": model,
+        "repo_dir": repo_dir,
+        "nodes": nodes,
+        "gpus_per_node": gpus_per_node,
+        "host_output_dir": output_dir.rstrip("/"),
+        "output_dir": c_output_dir,
+        "tp": tp,
+        "isl": isl,
+        "osl": osl,
+        "num_prompts": num_prompts,
+        "request_rate": request_rate,
+        "max_concurrency": max_concurrency or "",
+        "dataset": dataset,
+        "port": port,
+        "percentiles": percentiles,
+        "engine_args": engine_args or [],
+        "env_vars": env_vars or [],
+        "slurm_args": slurm_args or [],
+        "nodelist": nodelist or "",
+        "nodelist_items": _parse_nodelist(nodelist),
+        "time": time,
+        "account": account or "",
+        "partition": partition or "",
+        "image": resolved_image,
+        "container_image": resolved_image,
+        "container_mounts": resolved_mounts or "",
+        "k8s_namespace": namespace or "",
+        "pvc": pvc,
+    }
+
+    return template.render(**context)

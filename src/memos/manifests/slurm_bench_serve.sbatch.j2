@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --job-name=memos-bench-serve
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --time={{ time }}
+{% if nodelist %}#SBATCH --nodelist={{ nodelist }}
+{% endif %}{% if account %}#SBATCH --account={{ account }}
+{% endif %}{% if partition %}#SBATCH --partition={{ partition }}
+{% endif %}{% for sa in slurm_args %}#SBATCH --{{ sa }}
+{% endfor %}#SBATCH --output={{ host_output_dir }}/bench-serve-%j.log
+
+set -euo pipefail
+
+{% if container_image %}CONTAINER_ARGS="--container-image={{ container_image }}{% if container_mounts %} --container-mounts={{ container_mounts }}{% endif %} --no-container-mount-home"
+{% else %}CONTAINER_ARGS=""
+{% endif %}
+srun $CONTAINER_ARGS bash -c "
+{% for ev in env_vars %}  export {{ ev }}
+{% endfor %}  pip install -e {{ repo_dir }} --quiet 2>/dev/null
+  memos bench-serve \
+    --hw {{ hw_path }} \
+    --model {{ model }} \
+{% if tp %}    --tp {{ tp }} \
+{% endif %}    --isl {{ isl }} \
+    --osl {{ osl }} \
+    --num-prompts {{ num_prompts }} \
+    --request-rate '{{ request_rate }}' \
+{% if max_concurrency %}    --max-concurrency '{{ max_concurrency }}' \
+{% endif %}    --dataset {{ dataset }} \
+    --port {{ port }} \
+    --percentiles '{{ percentiles }}' \
+{% for ea in engine_args %}    --engine-arg {{ ea }} \
+{% endfor %}    --output {{ output_dir }}
+"
