@@ -585,6 +585,56 @@ def bench_serve(
     _echo_serving_summary(result)
 
 
+@main.command(name="serve-plot")
+@click.argument("results_path", type=click.Path(exists=True))
+@click.option("--output", default=None, type=click.Path(), help="Save plot to file")
+@click.option(
+    "--ttft-slo", default=500.0, type=float, help="p99 TTFT SLO (ms) for the knee"
+)
+@click.option(
+    "--tpot-slo", default=50.0, type=float, help="p99 TPOT SLO (ms) for the knee"
+)
+def serve_plot(
+    results_path: str, output: str | None, ttft_slo: float, tpot_slo: float
+) -> None:
+    """Plot serving SLO curves + print the max-throughput-under-SLO knee per config.
+
+    Reads bench_serve_*.json under RESULTS_PATH (one series per config dir) and
+    renders latency/pressure vs achieved-throughput curves.
+    """
+    from memos.serving.plot import find_knee, load_serving_series, plot_serving
+
+    series = load_serving_series(results_path)
+    if not series:
+        click.echo(f"No bench_serve_*.json found under {results_path}")
+        return
+
+    click.echo(f"Loaded {len(series)} serving config(s)")
+    plot_serving(
+        series,
+        title=f"Serving SLO curves ({Path(results_path).name})",
+        output=output,
+        ttft_slo_ms=ttft_slo,
+        tpot_slo_ms=tpot_slo,
+    )
+    if output:
+        click.echo(f"Plot saved to {output}")
+
+    click.echo(
+        f"\nSLO knee (max achieved req/s with p99 TTFT<{ttft_slo:g}ms "
+        f"and p99 TPOT<{tpot_slo:g}ms):"
+    )
+    for s in sorted(series, key=lambda x: x.name):
+        knee = find_knee(s, ttft_slo, tpot_slo)
+        if knee:
+            click.echo(
+                f"  {s.name:<40} {knee.request_throughput:6.1f} req/s "
+                f"({knee.output_throughput:8.0f} tok/s) @ rate={knee.request_rate}"
+            )
+        else:
+            click.echo(f"  {s.name:<40} (no point meets SLO)")
+
+
 def _echo_serving_summary(result) -> None:
     """Print a compact SLO/throughput table grouped by request rate."""
     by_rate: dict[str, dict[str, float]] = {}
