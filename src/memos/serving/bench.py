@@ -14,10 +14,12 @@ import json
 import re
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from memos.serving.server import (
+    KVBMPoller,
     PrometheusPoller,
     VLLMServer,
     parse_prometheus_metrics,
@@ -75,6 +77,14 @@ def _unit_for(name: str) -> str:
         return "requests"
     if name in ("kv_cache_usage_peak", "cpu_cache_usage_peak"):
         return "ratio"
+    if name.startswith("kvbm"):
+        if "hit_rate" in name:
+            return "ratio"
+        if "tokens" in name:
+            return "tokens"
+        if "blocks" in name:
+            return "blocks"
+        return "count"
     return "count"
 
 
@@ -151,6 +161,7 @@ def run_bench_serve(
     server_log: str | None = None,
     env: dict[str, str] | None = None,
     warmup_prompts: int = 64,
+    kvbm_metrics_port: int | None = None,
 ) -> BenchmarkResult:
     """Sweep offered load against a live vLLM server and collect SLO + pressure.
 
@@ -163,10 +174,18 @@ def run_bench_serve(
     discarded) runs first so the initial measured point is not contaminated by
     one-time torch.compile / CUDA-graph capture stalls (otherwise the lowest QPS
     point shows a huge TTFT tail as the first requests trigger compilation).
+
+    When `kvbm_metrics_port` is set (KVBM KV-offload enabled), the KVBM metrics
+    endpoint on that port is sampled alongside /metrics so each point also
+    records tier-movement counters (offload/onboard blocks, cache hit rate) --
+    the evidence that KV moved across tiers instead of being recomputed.
     """
     engine_args = engine_args or {}
     concurrencies: list[int | None] = (
         list(max_concurrency) if max_concurrency else [None]
+    )
+    kvbm_url = (
+        f"http://127.0.0.1:{kvbm_metrics_port}/metrics" if kvbm_metrics_port else None
     )
     metrics: list[MetricSample] = []
 
@@ -205,9 +224,14 @@ def run_bench_serve(
         for rate in request_rates:
             for conc in concurrencies:
                 tag = f"isl{isl}_osl{osl}_rate{rate}_conc{conc or 0}"
-                # The poller's context scopes /metrics sampling to this bench call.
+                # The pollers' contexts scope metric sampling to this bench call:
+                # vLLM /metrics for pressure, KVBM :6880 for tier movement.
                 poller = PrometheusPoller(server.metrics_url)
-                with poller:
+                kvbm_poller = KVBMPoller(kvbm_url) if kvbm_url else None
+                with ExitStack() as stack:
+                    stack.enter_context(poller)
+                    if kvbm_poller is not None:
+                        stack.enter_context(kvbm_poller)
                     result = _run_one_bench(
                         base_url=server.base_url,
                         model=model,
@@ -223,6 +247,8 @@ def run_bench_serve(
                     )
                 parsed = parse_vllm_bench_json(result)
                 pressure = poller.summary()
+                if kvbm_poller is not None:
+                    pressure.update(kvbm_poller.summary())
 
                 ctx: dict[str, Any] = {
                     "request_rate": str(rate),

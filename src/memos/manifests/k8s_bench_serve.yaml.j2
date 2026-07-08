@@ -27,7 +27,8 @@ metadata:
           set -euo pipefail
 {% for ev in env_vars %}          export {{ ev }}
 {% endfor %}          pip install -e {{ repo_dir }} --quiet
-          memos bench-serve \
+{% if kv_offload %}          pip install kvbm --quiet
+{% endif %}          memos bench-serve \
             --hw {{ hw_path }} \
             --model {{ model }} \
 {% if tp %}            --tp {{ tp }} \
@@ -41,7 +42,8 @@ metadata:
             --port {{ port }} \
             --percentiles "{{ percentiles }}" \
 {% for ea in engine_args %}            --engine-arg {{ ea }} \
-{% endfor %}            --output {{ output_dir }}
+{% endfor %}{% if kv_offload %}            --kv-offload "{{ kv_offload }}" \
+{% endif %}            --output {{ output_dir }}
         resources:
           limits:
             nvidia.com/gpu: {{ gpus_per_node }}

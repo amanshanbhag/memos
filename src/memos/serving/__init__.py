@@ -8,6 +8,8 @@ scheduler admission-controls the running batch.
 
 from memos.serving.bench import parse_vllm_bench_json, run_bench_serve
 from memos.serving.server import (
+    KVBM_DEFAULT_METRICS_PORT,
+    KVBMPoller,
     PrometheusPoller,
     VLLMServer,
     parse_prometheus_metrics,
@@ -16,6 +18,8 @@ from memos.serving.server import (
 __all__ = [
     "VLLMServer",
     "PrometheusPoller",
+    "KVBMPoller",
+    "KVBM_DEFAULT_METRICS_PORT",
     "run_bench_serve",
     "parse_vllm_bench_json",
     "parse_prometheus_metrics",

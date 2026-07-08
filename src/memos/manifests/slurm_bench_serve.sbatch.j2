@@ -18,7 +18,8 @@ set -euo pipefail
 srun $CONTAINER_ARGS bash -c "
 {% for ev in env_vars %}  export {{ ev }}
 {% endfor %}  pip install -e {{ repo_dir }} --quiet 2>/dev/null
-  memos bench-serve \
+{% if kv_offload %}  pip install kvbm --quiet
+{% endif %}  memos bench-serve \
     --hw {{ hw_path }} \
     --model {{ model }} \
 {% if tp %}    --tp {{ tp }} \
@@ -32,5 +33,6 @@ srun $CONTAINER_ARGS bash -c "
     --port {{ port }} \
     --percentiles '{{ percentiles }}' \
 {% for ea in engine_args %}    --engine-arg {{ ea }} \
-{% endfor %}    --output {{ output_dir }}
+{% endfor %}{% if kv_offload %}    --kv-offload '{{ kv_offload }}' \
+{% endif %}    --output {{ output_dir }}
 "

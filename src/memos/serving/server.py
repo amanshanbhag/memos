@@ -19,6 +19,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# Default port the Dynamo KVBM metrics endpoint binds to (DYN_KVBM_METRICS_PORT).
+KVBM_DEFAULT_METRICS_PORT = 6880
+
 
 def _emit_engine_args(engine_args: dict[str, Any]) -> list[str]:
     """Translate engine args into `vllm serve` CLI flags.
@@ -242,6 +245,76 @@ class PrometheusPoller:
             "cpu_cache_usage_peak": max(self._cpu) if self._cpu else 0.0,
             "num_preemptions": preempt,
         }
+
+
+class KVBMPoller:
+    """Samples the Dynamo KVBM metrics endpoint (default :6880) on a bg thread.
+
+    KVBM exposes tier-movement counters (offload/onboard block counts, matched
+    tokens) and cache-hit-rate gauges on its OWN Prometheus endpoint, separate
+    from vLLM's /metrics. This is the mechanism evidence for the offload-vs-
+    recompute story: it shows KV blocks actually moving HBM->host->disk and back
+    instead of being discarded and recomputed.
+
+    We capture any `kvbm*` metric so we're robust to exact-name/suffix variance
+    across KVBM versions: monotonic counters are reported as the delta across
+    the bench point, hit-rate/usage gauges as their peak. Fails silently if the
+    endpoint is unreachable (metrics disabled or KVBM not loaded), yielding an
+    empty summary so a run without offload still works.
+    """
+
+    def __init__(self, metrics_url: str, interval_s: float = 0.5) -> None:
+        self._url = metrics_url
+        self._interval = interval_s
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._first: dict[str, float] = {}
+        self._last: dict[str, float] = {}
+        self._max: dict[str, float] = {}
+
+    def _read(self) -> dict[str, float]:
+        with urllib.request.urlopen(self._url, timeout=2.0) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        return parse_prometheus_metrics(body)
+
+    def _poll(self) -> None:
+        while not self._stop.is_set():
+            try:
+                for name, value in self._read().items():
+                    if not name.startswith("kvbm"):
+                        continue
+                    key = name[:-6] if name.endswith("_total") else name
+                    if key not in self._first:
+                        self._first[key] = value
+                    self._last[key] = value
+                    if value > self._max.get(key, float("-inf")):
+                        self._max[key] = value
+            except Exception:
+                pass
+            self._stop.wait(self._interval)
+
+    def __enter__(self) -> "KVBMPoller":
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    @staticmethod
+    def _is_gauge(key: str) -> bool:
+        return "hit_rate" in key or "usage" in key
+
+    def summary(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for key in self._last:
+            if self._is_gauge(key):
+                out[f"{key}_peak"] = self._max.get(key, 0.0)
+            else:
+                out[key] = max(self._last[key] - self._first.get(key, 0.0), 0.0)
+        return out
 
 
 def parse_prometheus_metrics(text: str) -> dict[str, float]:

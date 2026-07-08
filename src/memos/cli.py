@@ -10,6 +10,59 @@ from memos.hardware import load_hardware
 from memos.types import InferenceConfig
 
 
+def _build_kv_offload(spec: str) -> tuple[str, dict[str, str]]:
+    """Expand a ``--kv-offload`` spec into the KVBM connector arg + env vars.
+
+    Spec is comma-separated ``tier:size_gb`` pairs, e.g. ``cpu:200`` or
+    ``cpu:200,disk:500``. Enabling Dynamo's KVBM turns vLLM V1's discard+
+    recompute preemption into offload+recall of KV blocks across HBM -> host
+    RAM (cpu) -> SSD (disk) over NIXL. Returns the ``kv_transfer_config`` JSON
+    string (a vLLM engine arg) and the ``DYN_KVBM_*`` environment overrides.
+
+    Kept as a convenience flag so the connector JSON (with quotes/braces) never
+    has to survive shell-quoting through the sweep-script -> sbatch -> bash -c
+    layers; only the plain ``cpu:200`` token travels through manifests.
+    """
+    from memos.serving.server import KVBM_DEFAULT_METRICS_PORT
+
+    env: dict[str, str] = {
+        "DYN_KVBM_METRICS": "true",
+        "DYN_KVBM_METRICS_PORT": str(KVBM_DEFAULT_METRICS_PORT),
+        # Large pinned-host / disk allocations can exceed the 120s default.
+        "DYN_KVBM_LEADER_WORKER_INIT_TIMEOUT_SECS": "600",
+    }
+    for part in spec.split(","):
+        if not part.strip():
+            continue
+        tier, _, size = part.partition(":")
+        tier = tier.strip().lower()
+        size = size.strip()
+        if not size:
+            raise click.BadParameter(
+                f"kv-offload tier '{tier}' needs a size, e.g. {tier}:200"
+            )
+        if tier == "cpu":
+            env["DYN_KVBM_CPU_CACHE_GB"] = size
+        elif tier == "disk":
+            env["DYN_KVBM_DISK_CACHE_GB"] = size
+        else:
+            raise click.BadParameter(
+                f"unknown kv-offload tier '{tier}' (use cpu or disk)"
+            )
+    if "DYN_KVBM_CPU_CACHE_GB" not in env:
+        # KVBM requires a host (G2) cache; disk (G3) offloads through it.
+        raise click.BadParameter("kv-offload must include a cpu tier, e.g. cpu:200")
+    connector = json.dumps(
+        {
+            "kv_connector": "DynamoConnector",
+            "kv_role": "kv_both",
+            "kv_connector_module_path": "kvbm.vllm_integration.connector",
+        },
+        separators=(",", ":"),
+    )
+    return connector, env
+
+
 def _parse_engine_arg_value(raw: str) -> int | float | bool | str:
     if raw.lower() in ("true", "false"):
         return raw.lower() == "true"
@@ -416,6 +469,13 @@ def run(
     help="Extra engine args as key=value (e.g. --engine-arg kv_cache_dtype=fp8)",
 )
 @click.option(
+    "--kv-offload",
+    default=None,
+    help="Enable Dynamo KVBM KV-cache tiering as 'tier:gb' pairs, e.g. "
+    "cpu:200 or cpu:200,disk:500 (offload+recall across HBM->host->SSD "
+    "instead of vLLM's discard+recompute preemption)",
+)
+@click.option(
     "--scheduler",
     default=None,
     type=click.Choice(["slurm", "k8s"]),
@@ -454,6 +514,7 @@ def bench_serve(
     port: int,
     percentiles: str,
     engine_arg: tuple[str, ...],
+    kv_offload: str | None,
     scheduler: str | None,
     manifest_path: str | None,
     nodes: int,
@@ -505,6 +566,7 @@ def bench_serve(
             port=port,
             percentiles=percentiles,
             engine_args=list(engine_arg),
+            kv_offload=kv_offload,
             env_vars=list(env),
             slurm_args=list(slurm_arg),
             nodelist=nodelist,
@@ -543,6 +605,18 @@ def bench_serve(
     effective_tp = tp if tp is not None else hw_config.gpu_count
     env_map = dict(e.split("=", 1) for e in env if "=" in e)
 
+    kvbm_metrics_port: int | None = None
+    if kv_offload:
+        from memos.serving.server import KVBM_DEFAULT_METRICS_PORT
+
+        connector, kvbm_env = _build_kv_offload(kv_offload)
+        parsed_engine_args["kv_transfer_config"] = connector
+        env_map.update(kvbm_env)
+        kvbm_metrics_port = int(
+            env_map.get("DYN_KVBM_METRICS_PORT", KVBM_DEFAULT_METRICS_PORT)
+        )
+        click.echo(f"KV offload (KVBM): {kv_offload}")
+
     click.echo(f"Serving benchmark: {model} on {hw_config.name}")
     click.echo(f"  tp={effective_tp} isl={isl} osl={osl} num_prompts={num_prompts}")
     click.echo(f"  request_rate={rates} max_concurrency={concs}")
@@ -567,6 +641,7 @@ def bench_serve(
         server_log=server_log,
         env=env_map or None,
         warmup_prompts=warmup_prompts,
+        kvbm_metrics_port=kvbm_metrics_port,
     )
 
     result.environment = dataclasses.asdict(detect_environment())
