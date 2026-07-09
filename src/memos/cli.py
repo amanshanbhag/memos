@@ -461,6 +461,24 @@ def run(
     help="Optional in-flight request cap(s), comma-separated (client-side)",
 )
 @click.option("--dataset", default="random", help="vllm bench dataset name")
+@click.option(
+    "--dataset-path",
+    default=None,
+    help="Path/HF id for non-random datasets (sharegpt/sonnet/custom)",
+)
+@click.option(
+    "--prefix-len",
+    default=0,
+    type=int,
+    help="Shared fixed prefix tokens per request (random dataset) -> KV reuse. "
+    "Total input length = prefix-len + isl.",
+)
+@click.option(
+    "--range-ratio",
+    default=None,
+    help="Length jitter in [0,1) for ISL/OSL (random dataset); 0/omitted=fixed. "
+    'A JSON dict like \'{"input":0.3,"output":0.5}\' sets them independently.',
+)
 @click.option("--port", default=8000, type=int, help="Server port")
 @click.option("--percentiles", default="90,95,99", help="Latency percentiles to report")
 @click.option(
@@ -511,6 +529,9 @@ def bench_serve(
     request_rate: str,
     max_concurrency: str | None,
     dataset: str,
+    dataset_path: str | None,
+    prefix_len: int,
+    range_ratio: str | None,
     port: int,
     percentiles: str,
     engine_arg: tuple[str, ...],
@@ -563,6 +584,9 @@ def bench_serve(
             request_rate=request_rate,
             max_concurrency=max_concurrency,
             dataset=dataset,
+            dataset_path=dataset_path,
+            prefix_len=prefix_len,
+            range_ratio=range_ratio,
             port=port,
             percentiles=percentiles,
             engine_args=list(engine_arg),
@@ -620,6 +644,7 @@ def bench_serve(
     click.echo(f"Serving benchmark: {model} on {hw_config.name}")
     click.echo(f"  tp={effective_tp} isl={isl} osl={osl} num_prompts={num_prompts}")
     click.echo(f"  request_rate={rates} max_concurrency={concs}")
+    click.echo(f"  dataset={dataset} prefix_len={prefix_len} range_ratio={range_ratio}")
     click.echo()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -636,6 +661,9 @@ def bench_serve(
         max_concurrency=concs,
         engine_args=parsed_engine_args,
         dataset=dataset,
+        dataset_path=dataset_path,
+        prefix_len=prefix_len,
+        range_ratio=range_ratio,
         port=port,
         percentiles=percentiles,
         server_log=server_log,

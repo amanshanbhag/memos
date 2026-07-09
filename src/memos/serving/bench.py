@@ -100,8 +100,19 @@ def _run_one_bench(
     percentiles: str,
     result_dir: Path,
     tag: str,
+    prefix_len: int = 0,
+    range_ratio: str | None = None,
+    dataset_path: str | None = None,
 ) -> dict[str, Any]:
-    """Invoke `vllm bench serve` for one point and return its parsed result JSON."""
+    """Invoke `vllm bench serve` for one point and return its parsed result JSON.
+
+    Workload realism knobs (random dataset): `prefix_len` prepends a fixed
+    SHARED prefix to every request (`--random-prefix-len`), which drives KV
+    reuse -- the total input length becomes `prefix_len + isl`. `range_ratio`
+    (`--random-range-ratio`, in [0,1)) jitters ISL/OSL so lengths are
+    heterogeneous instead of a single fixed value. `dataset_path` feeds
+    non-random datasets (e.g. sharegpt) their trace file.
+    """
     result_file = f"{tag}.json"
     cmd = [
         "vllm",
@@ -135,6 +146,12 @@ def _run_one_bench(
             "--random-output-len",
             str(osl),
         ]
+        if prefix_len:
+            cmd += ["--random-prefix-len", str(prefix_len)]
+        if range_ratio is not None:
+            cmd += ["--random-range-ratio", str(range_ratio)]
+    if dataset_path:
+        cmd += ["--dataset-path", dataset_path]
     if max_concurrency:
         cmd += ["--max-concurrency", str(max_concurrency)]
 
@@ -162,6 +179,9 @@ def run_bench_serve(
     env: dict[str, str] | None = None,
     warmup_prompts: int = 64,
     kvbm_metrics_port: int | None = None,
+    prefix_len: int = 0,
+    range_ratio: str | None = None,
+    dataset_path: str | None = None,
 ) -> BenchmarkResult:
     """Sweep offered load against a live vLLM server and collect SLO + pressure.
 
@@ -179,6 +199,12 @@ def run_bench_serve(
     endpoint on that port is sampled alongside /metrics so each point also
     records tier-movement counters (offload/onboard blocks, cache hit rate) --
     the evidence that KV moved across tiers instead of being recomputed.
+
+    Workload realism: `prefix_len` gives every request a shared fixed prefix
+    (total input = prefix_len + isl) so KV blocks are reused across requests --
+    the precondition for tiering to onboard (recall) instead of only offload.
+    `range_ratio` jitters lengths for a heterogeneous mix; `dataset_path` points
+    non-random datasets (sharegpt) at their trace.
     """
     engine_args = engine_args or {}
     concurrencies: list[int | None] = (
@@ -219,6 +245,9 @@ def run_bench_serve(
                 percentiles=percentiles,
                 result_dir=result_path,
                 tag="warmup",
+                prefix_len=prefix_len,
+                range_ratio=range_ratio,
+                dataset_path=dataset_path,
             )
 
         for rate in request_rates:
@@ -244,6 +273,9 @@ def run_bench_serve(
                         percentiles=percentiles,
                         result_dir=result_path,
                         tag=tag,
+                        prefix_len=prefix_len,
+                        range_ratio=range_ratio,
+                        dataset_path=dataset_path,
                     )
                 parsed = parse_vllm_bench_json(result)
                 pressure = poller.summary()
@@ -256,6 +288,8 @@ def run_bench_serve(
                     "actual_isl": isl,
                     "output_tokens": osl,
                     "num_prompts": num_prompts,
+                    "prefix_len": prefix_len,
+                    "range_ratio": range_ratio if range_ratio is not None else "0",
                 }
                 for name, value in {**parsed, **pressure}.items():
                     metrics.append(
@@ -279,6 +313,9 @@ def run_bench_serve(
             "request_rates": list(request_rates),
             "max_concurrency": list(max_concurrency) if max_concurrency else [],
             "dataset": dataset,
+            "dataset_path": dataset_path,
+            "prefix_len": prefix_len,
+            "range_ratio": range_ratio if range_ratio is not None else "0",
             "engine_args": engine_args,
         },
         metrics=metrics,

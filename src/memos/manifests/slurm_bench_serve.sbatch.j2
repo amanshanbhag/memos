@@ -30,7 +30,10 @@ srun $CONTAINER_ARGS bash -c "
     --request-rate '{{ request_rate }}' \
 {% if max_concurrency %}    --max-concurrency '{{ max_concurrency }}' \
 {% endif %}    --dataset {{ dataset }} \
-    --port {{ port }} \
+{% if dataset_path %}    --dataset-path '{{ dataset_path }}' \
+{% endif %}{% if prefix_len %}    --prefix-len {{ prefix_len }} \
+{% endif %}{% if range_ratio %}    --range-ratio '{{ range_ratio }}' \
+{% endif %}    --port {{ port }} \
     --percentiles '{{ percentiles }}' \
 {% for ea in engine_args %}    --engine-arg {{ ea }} \
 {% endfor %}{% if kv_offload %}    --kv-offload '{{ kv_offload }}' \
