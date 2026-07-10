@@ -785,28 +785,39 @@ def tier_plot(results_path: str, output: str | None) -> None:
     """
     from memos.serving.tier_plot import load_tier_points, plot_tiering
 
-    points = load_tier_points(results_path)
-    if not points:
-        click.echo(f"No bench_serve_*.json found under {results_path}")
+    data = load_tier_points(results_path)
+    if not data.points:
+        click.echo(
+            f"No capacity-sweep (num_prefixes>0) bench results under {results_path}"
+        )
         return
 
-    click.echo(f"Loaded {len(points)} tiering config(s)")
+    click.echo(f"Loaded {len(data.points)} valid tiering point(s)")
     plot_tiering(
-        points,
+        data,
         title=f"KV tiering vs working-set size ({Path(results_path).name})",
         output=output,
     )
     if output:
         click.echo(f"Plot saved to {output}")
 
-    click.echo("\nSaturated point per config (arm | num_prefixes | tok/s | p99 TTFT):")
-    for p in sorted(points, key=lambda x: (x.num_prefixes, x.arm)):
+    click.echo(
+        "\nMatched-rate comparison (arm | n_prefixes | rate | tok/s | p99 TTFT):"
+    )
+    for p in sorted(data.points, key=lambda x: (x.num_prefixes, x.request_rate, x.arm)):
         click.echo(
-            f"  {p.arm:<14} n={p.num_prefixes:<4} "
+            f"  {p.arm:<14} n={p.num_prefixes:<4} rate={p.request_rate:>4} "
             f"{p.output_throughput:>8.0f} tok/s  ttft_p99={p.ttft_p99:>9.1f} ms  "
             f"preempt={p.num_preemptions:>4.0f}  onboard={p.onboard:>7.0f}  "
             f"hit={p.hit_rate:.2%}"
         )
+    if data.dropped:
+        click.echo(
+            f"\nDropped {len(data.dropped)} collapsed point(s) (0 tokens served -- "
+            "run failed under overflow):"
+        )
+        for p in sorted(data.dropped, key=lambda x: (x.num_prefixes, x.arm)):
+            click.echo(f"  {p.arm:<14} n={p.num_prefixes:<4} rate={p.request_rate}")
 
 
 # ---------------------------------------------------------------------------

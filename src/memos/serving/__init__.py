@@ -14,7 +14,12 @@ from memos.serving.server import (
     VLLMServer,
     parse_prometheus_metrics,
 )
-from memos.serving.tier_plot import TierPoint, load_tier_points, plot_tiering
+from memos.serving.tier_plot import (
+    TierData,
+    TierPoint,
+    load_tier_points,
+    plot_tiering,
+)
 
 __all__ = [
     "VLLMServer",
@@ -24,6 +29,7 @@ __all__ = [
     "run_bench_serve",
     "parse_vllm_bench_json",
     "parse_prometheus_metrics",
+    "TierData",
     "TierPoint",
     "load_tier_points",
     "plot_tiering",
