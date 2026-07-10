@@ -121,9 +121,7 @@ def load_tier_points(results_path: str | Path) -> list[TierPoint]:
         if not by_rate:
             continue
 
-        best_rate = max(
-            by_rate, key=lambda r: by_rate[r].get("output_throughput", 0.0)
-        )
+        best_rate = max(by_rate, key=lambda r: by_rate[r].get("output_throughput", 0.0))
         vals = by_rate[best_rate]
         pt = TierPoint(
             name=name,
@@ -160,9 +158,7 @@ def plot_tiering(
     color = {a: cmap(i % 10) for i, a in enumerate(arms)}
 
     def line(arm: str) -> list[TierPoint]:
-        return sorted(
-            (p for p in points if p.arm == arm), key=lambda p: p.num_prefixes
-        )
+        return sorted((p for p in points if p.arm == arm), key=lambda p: p.num_prefixes)
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 12), sharex=True)
     ax_tp, ax_ttft, ax_mech = axes
@@ -191,15 +187,21 @@ def plot_tiering(
     kvbm_arms = [a for a in arms if "kvbm" in a]
     xs = sorted({p.num_prefixes for p in points})
     if kvbm_arms and xs:
-        width = 0.8 * (min(xs) if len(xs) == 1 else (xs[1] - xs[0])) / max(
-            len(kvbm_arms), 1
+        width = (
+            0.8
+            * (min(xs) if len(xs) == 1 else (xs[1] - xs[0]))
+            / max(len(kvbm_arms), 1)
         )
         for j, arm in enumerate(kvbm_arms):
             pts = {p.num_prefixes: p for p in line(arm)}
             heights = [pts[x].onboard if x in pts else 0.0 for x in xs]
             offs = [x + (j - (len(kvbm_arms) - 1) / 2) * width for x in xs]
             ax_mech.bar(
-                offs, heights, width=width, color=color[arm], alpha=0.7,
+                offs,
+                heights,
+                width=width,
+                color=color[arm],
+                alpha=0.7,
                 label=f"{arm} onboard blocks",
             )
     ax_mech.set_ylabel("KVBM onboard blocks (recall)")
@@ -214,7 +216,10 @@ def plot_tiering(
         ax_pre.plot(
             [p.num_prefixes for p in pts],
             [p.num_preemptions for p in pts],
-            "--s", color=color[arm], label=f"{arm} preemptions", ms=5,
+            "--s",
+            color=color[arm],
+            label=f"{arm} preemptions",
+            ms=5,
         )
     ax_pre.set_ylabel("recompute preemptions")
 

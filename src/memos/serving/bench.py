@@ -227,6 +227,11 @@ def run_bench_serve(
     non-random datasets (sharegpt) at their trace.
     """
     engine_args = engine_args or {}
+    if dataset == "prefix_repetition" and 0 < num_prompts < num_prefixes:
+        raise ValueError(
+            f"prefix_repetition needs num_prompts ({num_prompts}) >= num_prefixes "
+            f"({num_prefixes}) so each distinct prefix gets >=1 request"
+        )
     concurrencies: list[int | None] = (
         list(max_concurrency) if max_concurrency else [None]
     )
@@ -268,7 +273,10 @@ def run_bench_serve(
                 prefix_len=prefix_len,
                 range_ratio=range_ratio,
                 dataset_path=dataset_path,
-                num_prefixes=num_prefixes,
+                # prefix_repetition requires num_prompts >= num_prefixes (>=1
+                # request per distinct prefix); the small warmup pass would else
+                # violate it, so clamp the pool to the warmup prompt count.
+                num_prefixes=min(num_prefixes, warmup_prompts),
             )
 
         for rate in request_rates:
