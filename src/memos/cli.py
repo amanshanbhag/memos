@@ -479,6 +479,14 @@ def run(
     help="Length jitter in [0,1) for ISL/OSL (random dataset); 0/omitted=fixed. "
     'A JSON dict like \'{"input":0.3,"output":0.5}\' sets them independently.',
 )
+@click.option(
+    "--num-prefixes",
+    default=0,
+    type=int,
+    help="prefix_repetition dataset: number of DISTINCT prefixes (each prefix-len "
+    "tokens + isl suffix), each repeated num-prompts//num-prefixes times. A pool "
+    "larger than HBM creates eviction pressure WITH reuse (the tiering regime).",
+)
 @click.option("--port", default=8000, type=int, help="Server port")
 @click.option("--percentiles", default="90,95,99", help="Latency percentiles to report")
 @click.option(
@@ -532,6 +540,7 @@ def bench_serve(
     dataset_path: str | None,
     prefix_len: int,
     range_ratio: str | None,
+    num_prefixes: int,
     port: int,
     percentiles: str,
     engine_arg: tuple[str, ...],
@@ -587,6 +596,7 @@ def bench_serve(
             dataset_path=dataset_path,
             prefix_len=prefix_len,
             range_ratio=range_ratio,
+            num_prefixes=num_prefixes,
             port=port,
             percentiles=percentiles,
             engine_args=list(engine_arg),
@@ -644,7 +654,10 @@ def bench_serve(
     click.echo(f"Serving benchmark: {model} on {hw_config.name}")
     click.echo(f"  tp={effective_tp} isl={isl} osl={osl} num_prompts={num_prompts}")
     click.echo(f"  request_rate={rates} max_concurrency={concs}")
-    click.echo(f"  dataset={dataset} prefix_len={prefix_len} range_ratio={range_ratio}")
+    click.echo(
+        f"  dataset={dataset} prefix_len={prefix_len} range_ratio={range_ratio} "
+        f"num_prefixes={num_prefixes}"
+    )
     click.echo()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -664,6 +677,7 @@ def bench_serve(
         dataset_path=dataset_path,
         prefix_len=prefix_len,
         range_ratio=range_ratio,
+        num_prefixes=num_prefixes,
         port=port,
         percentiles=percentiles,
         server_log=server_log,

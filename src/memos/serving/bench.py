@@ -103,6 +103,7 @@ def _run_one_bench(
     prefix_len: int = 0,
     range_ratio: str | None = None,
     dataset_path: str | None = None,
+    num_prefixes: int = 0,
 ) -> dict[str, Any]:
     """Invoke `vllm bench serve` for one point and return its parsed result JSON.
 
@@ -112,6 +113,13 @@ def _run_one_bench(
     (`--random-range-ratio`, in [0,1)) jitters ISL/OSL so lengths are
     heterogeneous instead of a single fixed value. `dataset_path` feeds
     non-random datasets (e.g. sharegpt) their trace file.
+
+    For the `prefix_repetition` dataset, `num_prefixes` DISTINCT prefixes (each
+    `prefix_len` tokens, `isl` suffix tokens, `osl` output tokens) are generated
+    and each is repeated `num_prompts // num_prefixes` times. Unlike a single
+    shared prefix (which dedups and RELIEVES pressure), a pool of distinct-but-
+    reused prefixes larger than HBM both creates eviction pressure AND rewards
+    reload-over-recompute -- the capacity regime where KV tiering can win.
     """
     result_file = f"{tag}.json"
     cmd = [
@@ -150,6 +158,17 @@ def _run_one_bench(
             cmd += ["--random-prefix-len", str(prefix_len)]
         if range_ratio is not None:
             cmd += ["--random-range-ratio", str(range_ratio)]
+    elif dataset == "prefix_repetition":
+        cmd += [
+            "--prefix-repetition-prefix-len",
+            str(prefix_len),
+            "--prefix-repetition-suffix-len",
+            str(isl),
+            "--prefix-repetition-output-len",
+            str(osl),
+        ]
+        if num_prefixes:
+            cmd += ["--prefix-repetition-num-prefixes", str(num_prefixes)]
     if dataset_path:
         cmd += ["--dataset-path", dataset_path]
     if max_concurrency:
@@ -182,6 +201,7 @@ def run_bench_serve(
     prefix_len: int = 0,
     range_ratio: str | None = None,
     dataset_path: str | None = None,
+    num_prefixes: int = 0,
 ) -> BenchmarkResult:
     """Sweep offered load against a live vLLM server and collect SLO + pressure.
 
@@ -248,6 +268,7 @@ def run_bench_serve(
                 prefix_len=prefix_len,
                 range_ratio=range_ratio,
                 dataset_path=dataset_path,
+                num_prefixes=num_prefixes,
             )
 
         for rate in request_rates:
@@ -276,6 +297,7 @@ def run_bench_serve(
                         prefix_len=prefix_len,
                         range_ratio=range_ratio,
                         dataset_path=dataset_path,
+                        num_prefixes=num_prefixes,
                     )
                 parsed = parse_vllm_bench_json(result)
                 pressure = poller.summary()
@@ -290,6 +312,7 @@ def run_bench_serve(
                     "num_prompts": num_prompts,
                     "prefix_len": prefix_len,
                     "range_ratio": range_ratio if range_ratio is not None else "0",
+                    "num_prefixes": num_prefixes,
                 }
                 for name, value in {**parsed, **pressure}.items():
                     metrics.append(
@@ -316,6 +339,7 @@ def run_bench_serve(
             "dataset_path": dataset_path,
             "prefix_len": prefix_len,
             "range_ratio": range_ratio if range_ratio is not None else "0",
+            "num_prefixes": num_prefixes,
             "engine_args": engine_args,
         },
         metrics=metrics,

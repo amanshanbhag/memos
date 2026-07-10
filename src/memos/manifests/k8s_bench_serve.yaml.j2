@@ -42,6 +42,7 @@ metadata:
 {% if dataset_path %}            --dataset-path "{{ dataset_path }}" \
 {% endif %}{% if prefix_len %}            --prefix-len {{ prefix_len }} \
 {% endif %}{% if range_ratio %}            --range-ratio "{{ range_ratio }}" \
+{% endif %}{% if num_prefixes %}            --num-prefixes {{ num_prefixes }} \
 {% endif %}            --port {{ port }} \
             --percentiles "{{ percentiles }}" \
 {% for ea in engine_args %}            --engine-arg {{ ea }} \
