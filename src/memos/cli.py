@@ -771,6 +771,44 @@ def _echo_serving_summary(result) -> None:
         )
 
 
+@main.command(name="tier-plot")
+@click.argument("results_path", type=click.Path(exists=True))
+@click.option("--output", default=None, type=click.Path(), help="Save plot to file")
+def tier_plot(results_path: str, output: str | None) -> None:
+    """Plot the KV-tiering capacity sweep (recompute vs kvbm across num_prefixes).
+
+    Reads bench_serve_*.json under RESULTS_PATH (the sweep §14 tier_* dirs),
+    picks each config's saturated operating point, and renders throughput/TTFT
+    vs working-set size (one line per arm) plus a mechanism panel (KVBM onboard
+    blocks vs recompute preemptions) so a tiering win -- or a clean null -- is
+    legible.
+    """
+    from memos.serving.tier_plot import load_tier_points, plot_tiering
+
+    points = load_tier_points(results_path)
+    if not points:
+        click.echo(f"No bench_serve_*.json found under {results_path}")
+        return
+
+    click.echo(f"Loaded {len(points)} tiering config(s)")
+    plot_tiering(
+        points,
+        title=f"KV tiering vs working-set size ({Path(results_path).name})",
+        output=output,
+    )
+    if output:
+        click.echo(f"Plot saved to {output}")
+
+    click.echo("\nSaturated point per config (arm | num_prefixes | tok/s | p99 TTFT):")
+    for p in sorted(points, key=lambda x: (x.num_prefixes, x.arm)):
+        click.echo(
+            f"  {p.arm:<14} n={p.num_prefixes:<4} "
+            f"{p.output_throughput:>8.0f} tok/s  ttft_p99={p.ttft_p99:>9.1f} ms  "
+            f"preempt={p.num_preemptions:>4.0f}  onboard={p.onboard:>7.0f}  "
+            f"hit={p.hit_rate:.2%}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # memos roofline
 # ---------------------------------------------------------------------------

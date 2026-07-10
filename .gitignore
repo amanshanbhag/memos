@@ -28,4 +28,7 @@ results/
 .scratch/
 
 # Local scripts
-scripts/
+scripts/*
+
+# Docs
+docs/*
