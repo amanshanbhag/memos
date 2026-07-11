@@ -104,6 +104,7 @@ def _run_one_bench(
     range_ratio: str | None = None,
     dataset_path: str | None = None,
     num_prefixes: int = 0,
+    custom_output_len: int | None = None,
 ) -> dict[str, Any]:
     """Invoke `vllm bench serve` for one point and return its parsed result JSON.
 
@@ -169,6 +170,13 @@ def _run_one_bench(
         ]
         if num_prefixes:
             cmd += ["--prefix-repetition-num-prefixes", str(num_prefixes)]
+    elif dataset == "custom":
+        # Prompts are pre-baked in the JSONL (e.g. our Zipfian reuse workload):
+        # take them verbatim (skip the chat template so the shared prefix stays at
+        # token 0), no oversampling, and a fixed output length.
+        if custom_output_len is not None:
+            cmd += ["--custom-output-len", str(custom_output_len)]
+        cmd += ["--custom-skip-chat-template", "--no-oversample"]
     if dataset_path:
         cmd += ["--dataset-path", dataset_path]
     if max_concurrency:
@@ -202,6 +210,7 @@ def run_bench_serve(
     range_ratio: str | None = None,
     dataset_path: str | None = None,
     num_prefixes: int = 0,
+    zipf_s: float = 0.0,
 ) -> BenchmarkResult:
     """Sweep offered load against a live vLLM server and collect SLO + pressure.
 
@@ -232,6 +241,10 @@ def run_bench_serve(
             f"prefix_repetition needs num_prompts ({num_prompts}) >= num_prefixes "
             f"({num_prefixes}) so each distinct prefix gets >=1 request"
         )
+    if dataset == "zipf" and (num_prefixes <= 0 or prefix_len <= 0):
+        raise ValueError(
+            "zipf dataset needs --num-prefixes>0 and --prefix-len>0 (the reused pool)"
+        )
     concurrencies: list[int | None] = (
         list(max_concurrency) if max_concurrency else [None]
     )
@@ -246,6 +259,38 @@ def run_bench_serve(
     )
     result_path = Path(tmp_dir)
     result_path.mkdir(parents=True, exist_ok=True)
+
+    # `zipf` is a memos-native workload: materialize a skewed-reuse `custom` JSONL
+    # (Zipfian prefix popularity) and hand vLLM the standard custom dataset. This
+    # mirrors the prefix_repetition UX (one flag) while adding the popularity knob
+    # vLLM lacks -- the regime where a small fast tier captures most reuse.
+    effective_dataset = dataset
+    effective_dataset_path = dataset_path
+    custom_output_len: int | None = None
+    zipf_stats: dict[str, Any] | None = None
+    if dataset == "zipf":
+        from transformers import AutoTokenizer
+
+        from memos.serving.datasets import (
+            generate_zipf_prefix_dataset,
+            stats_to_dict,
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(model)
+        zipf_path = result_path / "zipf_dataset.jsonl"
+        stats = generate_zipf_prefix_dataset(
+            zipf_path,
+            tokenizer,
+            num_prefixes=num_prefixes,
+            prefix_len=prefix_len,
+            suffix_len=isl,
+            num_prompts=num_prompts,
+            zipf_s=zipf_s,
+        )
+        zipf_stats = stats_to_dict(stats)
+        effective_dataset = "custom"
+        effective_dataset_path = str(zipf_path)
+        custom_output_len = osl
 
     with VLLMServer(
         model,
@@ -266,17 +311,18 @@ def run_bench_serve(
                 num_prompts=warmup_prompts,
                 request_rate="inf",
                 max_concurrency=None,
-                dataset=dataset,
+                dataset=effective_dataset,
                 percentiles=percentiles,
                 result_dir=result_path,
                 tag="warmup",
                 prefix_len=prefix_len,
                 range_ratio=range_ratio,
-                dataset_path=dataset_path,
+                dataset_path=effective_dataset_path,
                 # prefix_repetition requires num_prompts >= num_prefixes (>=1
                 # request per distinct prefix); the small warmup pass would else
                 # violate it, so clamp the pool to the warmup prompt count.
                 num_prefixes=min(num_prefixes, warmup_prompts),
+                custom_output_len=custom_output_len,
             )
 
         for rate in request_rates:
@@ -298,14 +344,15 @@ def run_bench_serve(
                         num_prompts=num_prompts,
                         request_rate=rate,
                         max_concurrency=conc,
-                        dataset=dataset,
+                        dataset=effective_dataset,
                         percentiles=percentiles,
                         result_dir=result_path,
                         tag=tag,
                         prefix_len=prefix_len,
                         range_ratio=range_ratio,
-                        dataset_path=dataset_path,
+                        dataset_path=effective_dataset_path,
                         num_prefixes=num_prefixes,
+                        custom_output_len=custom_output_len,
                     )
                 parsed = parse_vllm_bench_json(result)
                 pressure = poller.summary()
@@ -321,6 +368,7 @@ def run_bench_serve(
                     "prefix_len": prefix_len,
                     "range_ratio": range_ratio if range_ratio is not None else "0",
                     "num_prefixes": num_prefixes,
+                    "zipf_s": zipf_s,
                 }
                 for name, value in {**parsed, **pressure}.items():
                     metrics.append(
@@ -348,6 +396,8 @@ def run_bench_serve(
             "prefix_len": prefix_len,
             "range_ratio": range_ratio if range_ratio is not None else "0",
             "num_prefixes": num_prefixes,
+            "zipf_s": zipf_s,
+            "zipf_dataset_stats": zipf_stats,
             "engine_args": engine_args,
         },
         metrics=metrics,

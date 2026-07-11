@@ -34,6 +34,7 @@ srun $CONTAINER_ARGS bash -c "
 {% endif %}{% if prefix_len %}    --prefix-len {{ prefix_len }} \
 {% endif %}{% if range_ratio %}    --range-ratio '{{ range_ratio }}' \
 {% endif %}{% if num_prefixes %}    --num-prefixes {{ num_prefixes }} \
+{% endif %}{% if zipf_s %}    --zipf-s {{ zipf_s }} \
 {% endif %}    --port {{ port }} \
     --percentiles '{{ percentiles }}' \
 {% for ea in engine_args %}    --engine-arg {{ ea }} \

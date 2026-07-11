@@ -487,6 +487,15 @@ def run(
     "tokens + isl suffix), each repeated num-prompts//num-prefixes times. A pool "
     "larger than HBM creates eviction pressure WITH reuse (the tiering regime).",
 )
+@click.option(
+    "--zipf-s",
+    default=0.0,
+    type=float,
+    help="Skew for the memos-native 'zipf' dataset: prefix popularity ~ 1/rank^s "
+    "(0=uniform like prefix_repetition; ~1.0-1.4 = a hot set). Needs --num-prefixes "
+    "(pool) + --prefix-len (prefix tokens) + --isl (suffix). Tests whether a SMALL "
+    "fast tier captures most reuse (graduated placement).",
+)
 @click.option("--port", default=8000, type=int, help="Server port")
 @click.option("--percentiles", default="90,95,99", help="Latency percentiles to report")
 @click.option(
@@ -541,6 +550,7 @@ def bench_serve(
     prefix_len: int,
     range_ratio: str | None,
     num_prefixes: int,
+    zipf_s: float,
     port: int,
     percentiles: str,
     engine_arg: tuple[str, ...],
@@ -597,6 +607,7 @@ def bench_serve(
             prefix_len=prefix_len,
             range_ratio=range_ratio,
             num_prefixes=num_prefixes,
+            zipf_s=zipf_s,
             port=port,
             percentiles=percentiles,
             engine_args=list(engine_arg),
@@ -656,7 +667,7 @@ def bench_serve(
     click.echo(f"  request_rate={rates} max_concurrency={concs}")
     click.echo(
         f"  dataset={dataset} prefix_len={prefix_len} range_ratio={range_ratio} "
-        f"num_prefixes={num_prefixes}"
+        f"num_prefixes={num_prefixes} zipf_s={zipf_s}"
     )
     click.echo()
 
@@ -678,6 +689,7 @@ def bench_serve(
         prefix_len=prefix_len,
         range_ratio=range_ratio,
         num_prefixes=num_prefixes,
+        zipf_s=zipf_s,
         port=port,
         percentiles=percentiles,
         server_log=server_log,
@@ -818,6 +830,107 @@ def tier_plot(results_path: str, output: str | None) -> None:
         )
         for p in sorted(data.dropped, key=lambda x: (x.num_prefixes, x.arm)):
             click.echo(f"  {p.arm:<14} n={p.num_prefixes:<4} rate={p.request_rate}")
+
+
+# ---------------------------------------------------------------------------
+# memos recommend
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="recommend")
+@click.option(
+    "--hw", required=True, type=click.Path(exists=True), help="Calibrated hardware YAML"
+)
+@click.option("--model", required=True, help="HF model id (config only, no weights)")
+@click.option("--tp", default=None, type=int, help="TP size (default: hw.gpu_count)")
+@click.option(
+    "--util",
+    default=0.9,
+    type=float,
+    help="gpu_memory_utilization the server runs at (KV budget = util*HBM - weights)",
+)
+@click.option(
+    "--working-set-tokens",
+    default=None,
+    type=float,
+    help="Total reused KV footprint in tokens (else derive from --num-prefixes*--prefix-len)",
+)
+@click.option("--num-prefixes", default=0, type=int, help="Distinct reused prefixes")
+@click.option("--prefix-len", default=0, type=int, help="Tokens per reused prefix")
+@click.option(
+    "--kv-dtype",
+    default="fp16",
+    type=click.Choice(["fp16", "bf16", "fp8", "int8"]),
+    help="KV cache dtype (fp8/int8 halve the footprint -> double effective capacity)",
+)
+def recommend(
+    hw: str,
+    model: str,
+    tp: int | None,
+    util: float,
+    working_set_tokens: float | None,
+    num_prefixes: int,
+    prefix_len: int,
+    kv_dtype: str,
+) -> None:
+    """Recommend KV-tier placement for a reused working set (host-capacity law).
+
+    Combines calibrated tier capacities (--hw) with the model's KV byte-rate and
+    weight footprint (--model, config only) to predict the regime: fits-HBM (no
+    tiering), tiering-win (offload the pool to a tier that holds it -> cliff
+    erased), or overflow-thrash (reduce footprint / enlarge tier). This is the
+    analytical recommender validated against the §15 host-capacity sweep.
+    """
+    from memos.model_profile import from_pretrained
+    from memos.recommender import recommend_kv_placement
+
+    if working_set_tokens is None:
+        if num_prefixes > 0 and prefix_len > 0:
+            working_set_tokens = float(num_prefixes * prefix_len)
+        else:
+            raise click.UsageError(
+                "provide --working-set-tokens OR both --num-prefixes and --prefix-len"
+            )
+
+    kv_bytes = {"fp16": 2, "bf16": 2, "fp8": 1, "int8": 1}[kv_dtype]
+    hw_config = load_hardware(hw)
+    profile = from_pretrained(model, kv_dtype_bytes=kv_bytes)
+    kv_per_tok = float(profile.kv_cache_bytes(seq=1, batch=1))
+    weight_bytes = float(profile.weight_bytes())
+
+    rec = recommend_kv_placement(
+        hw_config,
+        kv_bytes_per_token=kv_per_tok,
+        weight_bytes=weight_bytes,
+        working_set_tokens=working_set_tokens,
+        util=util,
+    )
+
+    click.echo(
+        f"\nModel: {model}  (KV {kv_per_tok / 1e6:.4f} MB/tok, "
+        f"weights {weight_bytes / 1e9:.0f} GB, kv_dtype={kv_dtype})"
+    )
+    click.echo(f"Hardware: {hw_config.name}  util={util}")
+    click.echo("\nTier KV budgets:")
+    for b in rec.tier_budgets:
+        click.echo(
+            f"  {b.name:<14} {b.kind:<6} {b.capacity_gb:>7.0f} GB  "
+            f"{b.capacity_tokens / 1e6:>7.2f} M tok  {b.bandwidth_gbps:>6.0f} GB/s"
+        )
+    click.echo(
+        f"\nWorking set: {rec.working_set_tokens / 1e6:.2f} M tok "
+        f"({rec.working_set_gb:.0f} GB)   HBM KV budget: "
+        f"{rec.hbm_kv_budget_tokens / 1e6:.2f} M tok"
+    )
+    click.echo(f"Regime: {rec.regime.upper()}")
+    if rec.placement_tier:
+        click.echo(f"Placement tier: {rec.placement_tier}")
+    if rec.recommended_offload_gb:
+        click.echo(f"Recommended offload size: ~{rec.recommended_offload_gb:.0f} GB")
+    click.echo(f"Predicted recall/hit ceiling: {rec.predicted_hit_rate:.0%}")
+    for n in rec.notes:
+        click.echo(f"  note: {n}")
+    click.echo(f"\n>> {rec.verdict}")
 
 
 # ---------------------------------------------------------------------------
