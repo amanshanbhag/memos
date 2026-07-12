@@ -16,6 +16,10 @@ dependencies = [
     "rich",
     "click",
     "jinja2",
+    # vLLM's `bench serve` lazily imports pandas to load the `custom` dataset
+    # (our zipf/skewed-reuse workload). The stock vllm:26.05 container omits it,
+    # so declare it here -> the sbatch's `pip install -e` pulls it in-container.
+    "pandas",
 ]
 
 [project.optional-dependencies]

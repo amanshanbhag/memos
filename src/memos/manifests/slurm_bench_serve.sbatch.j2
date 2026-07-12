@@ -18,6 +18,7 @@ set -euo pipefail
 srun $CONTAINER_ARGS bash -c "
 {% for ev in env_vars %}  export {{ ev }}
 {% endfor %}  pip install -e {{ repo_dir }} --quiet 2>/dev/null
+  pip install pandas --quiet
 {% if kv_offload %}  pip install kvbm --quiet
 {% endif %}  memos bench-serve \
     --hw {{ hw_path }} \

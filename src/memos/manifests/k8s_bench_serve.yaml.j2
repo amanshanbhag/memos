@@ -27,6 +27,7 @@ metadata:
           set -euo pipefail
 {% for ev in env_vars %}          export {{ ev }}
 {% endfor %}          pip install -e {{ repo_dir }} --quiet
+          pip install pandas --quiet
 {% if kv_offload %}          pip install kvbm --quiet
 {% endif %}          memos bench-serve \
             --hw {{ hw_path }} \
