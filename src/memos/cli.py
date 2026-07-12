@@ -22,12 +22,33 @@ def _build_kv_offload(spec: str) -> tuple[str, dict[str, str]]:
     Kept as a convenience flag so the connector JSON (with quotes/braces) never
     has to survive shell-quoting through the sweep-script -> sbatch -> bash -c
     layers; only the plain ``cpu:200`` token travels through manifests.
+
+    KVBM's leader binds fixed ports by default -- ZMQ pub (56001), ZMQ ack
+    (56002), and the metrics endpoint (6880). Two KV-offload jobs sharing a
+    physical node (e.g. several tp<node-GPU-count jobs packed onto one NVL72
+    node), or a rerun landing where a prior job's leader still holds the
+    socket, then collide with ``Zmq error: Address already in use`` and the
+    vLLM engine crashes on startup. We derive a per-job-unique port base so
+    co-located jobs and reruns never share these ports.
     """
-    from memos.serving.server import KVBM_DEFAULT_METRICS_PORT
+    import os
+
+    # Seed from SLURM_JOB_ID (each cluster job re-enters this CLI at runtime,
+    # so the base is stable within a job but unique across jobs); fall back to
+    # the PID for local runs. 2000 slots x 8 ports keeps us in the dynamic
+    # (49152-65535) range with headroom past pub/ack/metrics.
+    seed = os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID") or ""
+    try:
+        seed_int = int(seed)
+    except ValueError:
+        seed_int = os.getpid()
+    port_base = 49152 + (seed_int % 2000) * 8
 
     env: dict[str, str] = {
         "DYN_KVBM_METRICS": "true",
-        "DYN_KVBM_METRICS_PORT": str(KVBM_DEFAULT_METRICS_PORT),
+        "DYN_KVBM_METRICS_PORT": str(port_base),
+        "DYN_KVBM_LEADER_ZMQ_PUB_PORT": str(port_base + 1),
+        "DYN_KVBM_LEADER_ZMQ_ACK_PORT": str(port_base + 2),
         # Large pinned-host / disk allocations can exceed the 120s default.
         "DYN_KVBM_LEADER_WORKER_INIT_TIMEOUT_SECS": "600",
     }
