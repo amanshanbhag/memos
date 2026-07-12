@@ -172,11 +172,14 @@ def _run_one_bench(
             cmd += ["--prefix-repetition-num-prefixes", str(num_prefixes)]
     elif dataset == "custom":
         # Prompts are pre-baked in the JSONL (e.g. our Zipfian reuse workload):
-        # take them verbatim (skip the chat template so the shared prefix stays at
-        # token 0), no oversampling, and a fixed output length.
+        # take them verbatim (no oversampling) with a fixed output length. The chat
+        # template is applied but is identical for every request, so it prepends a
+        # constant-length shared header -> the zipf prefix stays block-aligned and
+        # prefix caching still hits per hot group. (vllm:26.05 dropped the old
+        # --custom-skip-chat-template flag, so we no longer pass it.)
         if custom_output_len is not None:
             cmd += ["--custom-output-len", str(custom_output_len)]
-        cmd += ["--custom-skip-chat-template", "--no-oversample"]
+        cmd += ["--no-oversample"]
     if dataset_path:
         cmd += ["--dataset-path", dataset_path]
     if max_concurrency:
