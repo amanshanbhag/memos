@@ -20,6 +20,7 @@ srun $CONTAINER_ARGS bash -c "
 {% endfor %}  pip install -e {{ repo_dir }} --quiet 2>/dev/null
   pip install pandas --quiet
 {% if kv_offload %}  pip install kvbm --quiet
+  bash {{ repo_dir }}/scripts/pin_nixl.sh || true
 {% endif %}  memos bench-serve \
     --hw {{ hw_path }} \
     --model {{ model }} \

@@ -20,6 +20,10 @@ dependencies = [
     # (our zipf/skewed-reuse workload). The stock vllm:26.05 container omits it,
     # so declare it here -> the sbatch's `pip install -e` pulls it in-container.
     "pandas",
+    # `memos recommend` / model_profile build a ModelProfile from a HF
+    # config.json via transformers.AutoConfig (config only, no torch/weights).
+    # Needed on the bare login-node venv, where vLLM (which vendors it) is absent.
+    "transformers",
 ]
 
 [project.optional-dependencies]

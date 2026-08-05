@@ -63,7 +63,111 @@ class Recommendation:
     verdict: str
     tier_budgets: list[TierBudget] = field(default_factory=list)
     reload_beats_recompute: bool | None = None
+    # Gate 2 (feasibility) -- see assess_kv_feasibility / finding #23.
+    churn: float | None = None
+    feasibility_risk: str | None = None  # "safe" | "moderate" | "high"
+    feasible: bool | None = None
     notes: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Gate 2: FEASIBILITY (research notes finding #23).
+#
+# Gate 1 (reload-vs-recompute + host-capacity) answers "is offload CHEAPER?".
+# Gate 2 answers "is offload DEPLOYABLE at this load?" -- because the KVBM
+# offload path can CRASH (vLLM scheduler.py:647 assertion) under sustained
+# offload/onboard CHURN, independent of whether it would be cheaper.
+#
+# Empirical basis (measured tierhost llama70b sweeps; churn = working_set /
+# HBM_KV_budget, using each GPU's MEASURED KV pool):
+#   H100  (80GB, util0.9, 444k tok): churn 2.36 CRASH@r8, 3.54 CRASH@r8,
+#                                     4.72 CRASH@r12   -> early failure ~churn 2.4
+#   GB300 (util0.27,      487k tok): churn 2.15 ok,   3.23 ok,  4.31 CRASH@r12
+#   GB300/GB200 (util0.5, >=721k):   churn <=1.6      -> always ok
+# Two regimes emerge:
+#   * a PORTABLE ceiling ~4: crashes on ANY HW at high concurrency;
+#   * an EARLY-FAILURE floor ~2: crashes only on small-HBM/slow-host parts.
+# Concurrency matters: at rate<8 even H100 churn 4.72 survived; crashes appear
+# at rate>=8. The factor that lowers the small-HBM threshold (host BW PCIe-vs-C2C
+# vs Hopper-vs-Blackwell) is NOT yet isolated (B200/B300 runs pending), so the
+# per-platform `safe_churn_ceiling` is a calibrated knob, conservative by default.
+# ---------------------------------------------------------------------------
+
+# Below this churn there is no meaningful offload traffic (pool ~fits HBM).
+_CHURN_NO_TRAFFIC = 1.0
+# Concurrency (offered rate / max in-flight) at/above which the race becomes fatal.
+_RISK_CONCURRENCY = 8.0
+# Churn above which the offload path crashes on EVERY GPU measured (portable).
+_CHURN_PORTABLE_CEILING = 4.0
+
+
+def assess_kv_feasibility(
+    churn: float,
+    concurrency: float | None,
+    safe_churn_ceiling: float = 2.0,
+) -> tuple[str, bool, str]:
+    """Gate 2: will the KVBM offload path stay alive at this churn + concurrency?
+
+    Returns (risk_level, feasible, note). `churn` = working_set / HBM_KV_budget.
+    `safe_churn_ceiling` is the per-platform churn below which offload is safe at
+    high concurrency; default 2.0 is the conservative (small-HBM/slow-host, i.e.
+    H100-like) value. Large-HBM / fast-host (C2C) platforms tolerate more -- pass
+    a higher ceiling (Blackwell C2C measured safe to ~3.2). Above the PORTABLE
+    ceiling (~4) offload crashes on every GPU measured.
+    """
+    if concurrency is None:
+        concurrency = _RISK_CONCURRENCY  # assume load unless told otherwise
+
+    if churn <= _CHURN_NO_TRAFFIC:
+        return (
+            "safe",
+            True,
+            (
+                f"churn {churn:.2f} <= 1: pool ~fits HBM, negligible offload traffic; "
+                "no feasibility risk."
+            ),
+        )
+    if concurrency < _RISK_CONCURRENCY:
+        return (
+            "safe",
+            True,
+            (
+                f"churn {churn:.2f} at low concurrency ({concurrency:g} < "
+                f"{_RISK_CONCURRENCY:g}): offload traffic tolerable; the race did not "
+                "fire below rate 8 in any measured run."
+            ),
+        )
+    if churn >= _CHURN_PORTABLE_CEILING:
+        return (
+            "high",
+            False,
+            (
+                f"churn {churn:.2f} >= portable ceiling {_CHURN_PORTABLE_CEILING:g} at "
+                f"concurrency {concurrency:g}: offload path crashes on EVERY GPU "
+                "measured (scheduler.py:647). Do NOT offload; recompute or shrink the "
+                "working set / add HBM."
+            ),
+        )
+    if churn > safe_churn_ceiling:
+        return (
+            "moderate",
+            False,
+            (
+                f"churn {churn:.2f} in the platform-dependent band "
+                f"({safe_churn_ceiling:g}..{_CHURN_PORTABLE_CEILING:g}] at concurrency "
+                f"{concurrency:g}: fails on small-HBM/slow-host (e.g. H100) but survives "
+                "on large-HBM/fast-host (C2C Blackwell). Feasibility is HW-dependent; "
+                "treat as risky unless this platform's ceiling is known higher."
+            ),
+        )
+    return (
+        "safe",
+        True,
+        (
+            f"churn {churn:.2f} <= platform ceiling {safe_churn_ceiling:g}: offload "
+            "path stayed alive in all measured runs at this churn."
+        ),
+    )
 
 
 def _classify(name: str) -> str:
@@ -158,6 +262,8 @@ def recommend_kv_placement(
     util: float = 0.9,
     prefill_flops_per_token: float | None = None,
     peak_flops: float | None = None,
+    concurrency: float | None = None,
+    safe_churn_ceiling: float = 2.0,
 ) -> Recommendation:
     """Recommend where to place a reused KV working set, per the host-capacity law.
 
@@ -174,6 +280,12 @@ def recommend_kv_placement(
         raise ValueError("no HBM tier found in hardware config")
     hbm_budget = hbm.capacity_tokens
     ws_gb = working_set_tokens * kv_bytes_per_token / 1e9
+
+    # Gate 2 (feasibility): offload/onboard churn = working set / HBM KV budget.
+    churn = working_set_tokens / hbm_budget if hbm_budget > 0 else float("inf")
+    feas_risk, feasible, feas_note = assess_kv_feasibility(
+        churn, concurrency, safe_churn_ceiling
+    )
 
     # Offload candidates: everything except HBM, fastest first.
     offload = sorted(
@@ -214,26 +326,41 @@ def recommend_kv_placement(
             ),
             tier_budgets=budgets,
             reload_beats_recompute=reload_beats_recompute,
-            notes=notes,
+            churn=churn,
+            feasibility_risk=feas_risk,
+            feasible=feasible,
+            notes=notes + [feas_note],
         )
 
     # Regime 2: pressure exists -> find the fastest tier that HOLDS the pool.
     for tier in offload:
         if working_set_tokens <= tier.capacity_tokens * _HOST_HEADROOM:
-            win = reload_beats_recompute is not False  # None or True -> assume win
+            cost_win = reload_beats_recompute is not False  # None/True -> cost win
+            # Gate 1 says "cheaper"; gate 2 must also say "deployable".
+            win = cost_win and feasible
             regime = "tiering_win" if win else "overflow_thrash"
-            verdict = (
-                f"Offload the reused pool ({ws_gb:.0f}GB) to '{tier.name}' "
-                f"(cap {tier.capacity_gb:.0f}GB). Working set fits the tier -> "
-                "predicted near-full recall, eviction cliff ERASED."
-                if win
-                else (
+            if not cost_win:
+                verdict = (
                     f"'{tier.name}' holds the pool but its bandwidth "
                     f"({tier.bandwidth_gbps:.0f}GB/s) makes reload SLOWER than "
                     "recompute -> tiering will not win here; prefer recompute or a "
                     "faster tier."
                 )
-            )
+            elif not feasible:
+                verdict = (
+                    f"'{tier.name}' holds the pool AND reload is cheaper than "
+                    f"recompute, BUT gate 2 fails: {feas_note} Offload would be "
+                    "cheaper-if-it-ran, but the path is not deployable at this "
+                    "load; prefer recompute (or reduce concurrency / working set / "
+                    "add HBM)."
+                )
+            else:
+                verdict = (
+                    f"Offload the reused pool ({ws_gb:.0f}GB) to '{tier.name}' "
+                    f"(cap {tier.capacity_gb:.0f}GB). Working set fits the tier, "
+                    "reload beats recompute, and churn is within the feasible band "
+                    "-> predicted near-full recall, eviction cliff ERASED."
+                )
             return Recommendation(
                 working_set_tokens=working_set_tokens,
                 working_set_gb=ws_gb,
@@ -245,7 +372,10 @@ def recommend_kv_placement(
                 verdict=verdict,
                 tier_budgets=budgets,
                 reload_beats_recompute=reload_beats_recompute,
-                notes=notes,
+                churn=churn,
+                feasibility_risk=feas_risk,
+                feasible=feasible,
+                notes=notes + [feas_note],
             )
 
     # Regime 3: exceeds every tier -> thrash.
@@ -269,7 +399,172 @@ def recommend_kv_placement(
         "shrink the reused working set, add a larger fast tier, or accept recompute.",
         tier_budgets=budgets,
         reload_beats_recompute=reload_beats_recompute,
-        notes=notes,
+        churn=churn,
+        feasibility_risk=feas_risk,
+        feasible=feasible,
+        notes=notes + [feas_note],
+    )
+
+
+# ---------------------------------------------------------------------------
+# MULTI-TIER placement (Track D3): evaluate BOTH gates PER TIER and pick a
+# placement. The novel output vs v1 (single host tier) is the CROSSOVER TIER --
+# the slowest tier where reload still beats recompute -- which moves UP the
+# hierarchy as GPU FLOPS grow. So the optimal placement tier is hardware-
+# dependent: e.g. NVMe offload can PAY on Hopper and LOSE on Blackwell for the
+# same model, because faster compute makes recompute cheaper.
+#
+#   reload_time/tok    = kv_bytes_per_token / tier_bandwidth
+#   recompute_time/tok = prefill_flops_per_token / peak_flops   (2*P_active/FLOPS)
+#   crossover bw*      = kv_bytes_per_token * peak_flops / prefill_flops_per_token
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TierDecision:
+    """Per-tier evaluation of the two gates for a reused KV working set."""
+
+    name: str
+    kind: str  # "hbm" | "host" | "disk" | "remote"
+    bandwidth_gbps: float
+    capacity_gb: float
+    capacity_tokens: float
+    fits: bool  # capacity gate: does the working set fit (with headroom)?
+    reload_us_per_tok: float
+    recompute_us_per_tok: float
+    reload_wins: bool  # gate 1 (cost): reload cheaper than recompute?
+    feasible: bool  # gate 2 (feasibility): offload path survives churn+concurrency?
+    usable: bool  # fits AND reload_wins AND feasible
+
+
+@dataclass
+class MultiTierPlacement:
+    """A hardware-calibrated per-tier placement plan (Track D3)."""
+
+    working_set_tokens: float
+    working_set_gb: float
+    hbm_kv_budget_tokens: float
+    churn: float
+    recompute_us_per_tok: float
+    tiers: list[TierDecision]
+    recommended_tier: str  # tier name | "hbm" (fits) | "recompute" (no tier usable)
+    crossover_tier: str | None  # slowest tier where reload still beats recompute
+    verdict: str
+
+
+def place_kv_multitier(
+    hw: HardwareConfig,
+    kv_bytes_per_token: float,
+    weight_bytes: float,
+    working_set_tokens: float,
+    prefill_flops_per_token: float,
+    peak_flops: float,
+    util: float = 0.9,
+    concurrency: float | None = None,
+    safe_churn_ceiling: float = 2.0,
+) -> MultiTierPlacement:
+    """Recommend a KV placement tier by evaluating both gates on EVERY tier.
+
+    Unlike `recommend_kv_placement` (single aggregated host tier, v1), this keeps
+    each non-HBM tier (host / disk / remote) separate, computes the reload-vs-
+    recompute crossover per tier, and returns (a) the recommended tier = the
+    FASTEST tier that fits the pool AND beats recompute AND is feasible, and (b)
+    the CROSSOVER tier = the SLOWEST tier where reload still beats recompute (the
+    hardware-dependent boundary that is this work's multi-tier contribution).
+    """
+    if peak_flops <= 0 or prefill_flops_per_token <= 0:
+        raise ValueError("peak_flops and prefill_flops_per_token must be > 0")
+
+    # HBM budget (weights co-resident, spans TP group).
+    hbm_tier = next((t for t in hw.tiers if _classify(t.name) == "hbm"), None)
+    if hbm_tier is None:
+        raise ValueError("no HBM tier found in hardware config")
+    hbm_total = hbm_tier.capacity_gb * 1e9 * max(hw.gpu_count, 1)
+    hbm_budget = max(util * hbm_total - weight_bytes, 0.0) / kv_bytes_per_token
+    churn = working_set_tokens / hbm_budget if hbm_budget > 0 else float("inf")
+    ws_gb = working_set_tokens * kv_bytes_per_token / 1e9
+
+    recompute_us = prefill_flops_per_token / peak_flops * 1e6
+    _, feasible, _ = assess_kv_feasibility(churn, concurrency, safe_churn_ceiling)
+
+    decisions: list[TierDecision] = []
+    for t in hw.tiers:
+        kind = _classify(t.name)
+        if kind in ("hbm", "peer"):
+            continue  # HBM is the source, peer holds shard state (not spare KV)
+        cap_tok = t.capacity_gb * 1e9 / kv_bytes_per_token
+        fits = working_set_tokens <= cap_tok * _HOST_HEADROOM
+        reload_us = (
+            kv_bytes_per_token / (t.bandwidth_gbps * 1e9) * 1e6
+            if t.bandwidth_gbps > 0
+            else float("inf")
+        )
+        reload_wins = reload_us < recompute_us
+        decisions.append(
+            TierDecision(
+                name=t.name,
+                kind=kind,
+                bandwidth_gbps=t.bandwidth_gbps,
+                capacity_gb=t.capacity_gb,
+                capacity_tokens=cap_tok,
+                fits=fits,
+                reload_us_per_tok=reload_us,
+                recompute_us_per_tok=recompute_us,
+                reload_wins=reload_wins,
+                feasible=feasible,
+                usable=(fits and reload_wins and feasible),
+            )
+        )
+    decisions.sort(key=lambda d: d.bandwidth_gbps, reverse=True)
+
+    crossover = next(
+        (
+            d.name
+            for d in sorted(decisions, key=lambda d: d.bandwidth_gbps)
+            if d.reload_wins
+        ),
+        None,
+    )
+
+    if working_set_tokens <= hbm_budget:
+        rec, verdict = "hbm", (
+            f"Working set ({working_set_tokens/1e6:.2f}M tok) fits HBM "
+            f"({hbm_budget/1e6:.2f}M) -> no offload needed."
+        )
+    else:
+        usable = [d for d in decisions if d.usable]
+        if usable:
+            best = usable[0]  # fastest usable tier
+            rec, verdict = best.name, (
+                f"Offload to '{best.name}' ({best.bandwidth_gbps:.0f} GB/s): fits, "
+                f"reload {best.reload_us_per_tok:.2f} < recompute {recompute_us:.2f} "
+                f"us/tok, churn {churn:.2f} feasible. Slowest tier that still beats "
+                f"recompute = '{crossover}'."
+            )
+        else:
+            rec, verdict = "recompute", (
+                f"No tier is usable (churn {churn:.2f}, feasible={feasible}). "
+                + (
+                    "All holding tiers are slower than the recompute crossover "
+                    f"({kv_bytes_per_token*peak_flops/prefill_flops_per_token/1e9:.1f} "
+                    "GB/s) "
+                    if crossover is None
+                    else f"Cheapest winning tier '{crossover}' fails the fit/feasibility "
+                    "gate "
+                )
+                + "-> recompute (do not offload)."
+            )
+
+    return MultiTierPlacement(
+        working_set_tokens=working_set_tokens,
+        working_set_gb=ws_gb,
+        hbm_kv_budget_tokens=hbm_budget,
+        churn=churn,
+        recompute_us_per_tok=recompute_us,
+        tiers=decisions,
+        recommended_tier=rec,
+        crossover_tier=crossover,
+        verdict=verdict,
     )
 
 

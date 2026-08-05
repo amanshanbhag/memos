@@ -73,6 +73,29 @@ def _build_kv_offload(spec: str) -> tuple[str, dict[str, str]]:
     if "DYN_KVBM_CPU_CACHE_GB" not in env:
         # KVBM requires a host (G2) cache; disk (G3) offloads through it.
         raise click.BadParameter("kv-offload must include a cpu tier, e.g. cpu:200")
+
+    # Disk (G3) tier: KVBM is a write-through cache, so each tier must be >= the
+    # one above it or it churns with no benefit (Dynamo KVBM guide). Enforce
+    # disk >= cpu, and apply cluster-safe defaults (verified 07_22 from the KVBM
+    # docs) so the disk arm actually starts on a SLURM/Lustre + containerized box:
+    #   - DISK_CACHE_DIR: the container /tmp default is overlayfs, which cuFile/
+    #     GDS (O_DIRECT) cannot register -> point at a real block-backed scratch
+    #     dir via MEMOS_KVBM_DISK_DIR.
+    #   - ZEROFILL_FALLBACK: Lustre / network FS lack fallocate() -> zero-fill.
+    #   - DISABLE_DISK_OFFLOAD_FILTER: the default freq>=2 filter (SSD-lifespan)
+    #     starves the tier and confounds a crossover measurement -> off for sweeps.
+    if "DYN_KVBM_DISK_CACHE_GB" in env:
+        if int(env["DYN_KVBM_DISK_CACHE_GB"]) < int(env["DYN_KVBM_CPU_CACHE_GB"]):
+            raise click.BadParameter(
+                "kv-offload disk tier must be >= cpu tier (KVBM is write-through; "
+                f"got disk:{env['DYN_KVBM_DISK_CACHE_GB']} < "
+                f"cpu:{env['DYN_KVBM_CPU_CACHE_GB']})"
+            )
+        disk_dir = os.environ.get("MEMOS_KVBM_DISK_DIR")
+        if disk_dir:
+            env["DYN_KVBM_DISK_CACHE_DIR"] = disk_dir
+        env.setdefault("DYN_KVBM_DISK_ZEROFILL_FALLBACK", "true")
+        env.setdefault("DYN_KVBM_DISABLE_DISK_OFFLOAD_FILTER", "true")
     connector = json.dumps(
         {
             "kv_connector": "DynamoConnector",
