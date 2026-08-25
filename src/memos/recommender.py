@@ -88,9 +88,14 @@ class Recommendation:
 #   * a PORTABLE ceiling ~4: crashes on ANY HW at high concurrency;
 #   * an EARLY-FAILURE floor ~2: crashes only on small-HBM/slow-host parts.
 # Concurrency matters: at rate<8 even H100 churn 4.72 survived; crashes appear
-# at rate>=8. The factor that lowers the small-HBM threshold (host BW PCIe-vs-C2C
-# vs Hopper-vs-Blackwell) is NOT yet isolated (B200/B300 runs pending), so the
-# per-platform `safe_churn_ceiling` is a calibrated knob, conservative by default.
+# at rate>=8.
+# ISOLATED (finding #24, B200 07_17 vs GB200): the factor that lowers the
+# early-failure threshold is the HOST INTERCONNECT (first order), with silicon
+# generation second order. Matched Blackwell silicon + matched churn, flipping only
+# the host link: GB200 (C2C) rode churn ~3.0 at all rates; B200 (PCIe) degraded 3.3x
+# at churn ~2.3 and crashed at churn ~3.0. H100 (PCIe + Hopper) crashed at churn ~2.3.
+# So the per-platform ceiling is keyed on (host_link, silicon) -- see
+# `safe_churn_ceiling_for` / `_CEILING_BY_HOST` below.
 # ---------------------------------------------------------------------------
 
 # Below this churn there is no meaningful offload traffic (pool ~fits HBM).
@@ -99,6 +104,28 @@ _CHURN_NO_TRAFFIC = 1.0
 _RISK_CONCURRENCY = 8.0
 # Churn above which the offload path crashes on EVERY GPU measured (portable).
 _CHURN_PORTABLE_CEILING = 4.0
+
+# Calibrated gate-2 churn ceilings by (host_link, silicon) -- finding #24.
+# The feasibility ceiling is set FIRST-ORDER by the host link (C2C >> PCIe at
+# matched churn/silicon); silicon generation is a second-order downgrade
+# (Hopper < Blackwell on PCIe). Measured: C2C Blackwell safe to ~3.2 (-> 4.0);
+# PCIe Blackwell (B200) degrades ~2.3 / crashes ~3.0 (-> 2.5); PCIe Hopper (H100)
+# crashes ~2.3 (-> 2.0). C2C Hopper unmeasured -> assume the link dominates.
+_CEILING_BY_HOST: dict[tuple[str, str], float] = {
+    ("c2c", "blackwell"): 4.0,
+    ("c2c", "hopper"): 4.0,
+    ("pcie", "blackwell"): 2.5,
+    ("pcie", "hopper"): 2.0,
+}
+
+
+def safe_churn_ceiling_for(host_link: str, silicon: str = "blackwell") -> float:
+    """Calibrated gate-2 churn ceiling for a platform (finding #24).
+
+    host_link: 'c2c' (Grace NVLink-C2C) or 'pcie'; silicon: 'blackwell' | 'hopper'.
+    Falls back to the conservative 2.0 (small-HBM / slow-host) for unknown combos.
+    """
+    return _CEILING_BY_HOST.get((host_link.lower(), silicon.lower()), 2.0)
 
 
 def assess_kv_feasibility(
